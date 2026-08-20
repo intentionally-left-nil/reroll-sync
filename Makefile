@@ -1,0 +1,50 @@
+.DEFAULT_GOAL := help
+.PHONY: help install lint format format-check typecheck test coverage-html ci run init clean
+
+help:
+	@echo "Targets:"
+	@echo "  install           Install package + dev dependencies via uv"
+	@echo "  lint              Run ruff check"
+	@echo "  format            Run ruff format (rewrites files)"
+	@echo "  format-check      Run ruff format --check (no rewrites, for CI)"
+	@echo "  typecheck         Run ty check"
+	@echo "  test              Run the test suite (with coverage, fails under 100%)"
+	@echo "  coverage-html     Run tests and open an HTML coverage report"
+	@echo "  ci                Run everything CI runs: lint, format-check, typecheck, test"
+	@echo "  run               Run the reroll_sync CLI (ARGS=\"...\")"
+	@echo "  init              Run 'reroll_sync init' (DB_PATH=... optional)"
+	@echo "  clean             Remove caches and coverage artifacts"
+
+install:
+	uv sync --group dev
+
+lint:
+	uv run ruff check .
+
+format:
+	uv run ruff format .
+
+format-check:
+	uv run ruff format --check .
+
+typecheck:
+	uv run ty check
+
+test:
+	uv run pytest
+
+coverage-html:
+	uv run pytest --cov-report=html
+	open htmlcov/index.html
+
+ci: lint format-check typecheck test
+
+run:
+	uv run reroll_sync $(ARGS)
+
+init:
+	uv run reroll_sync init $(DB_PATH)
+
+clean:
+	rm -rf .pytest_cache .ruff_cache htmlcov .coverage coverage.xml build dist
+	find . -type d -name __pycache__ -not -path "./.venv/*" -exec rm -rf {} +

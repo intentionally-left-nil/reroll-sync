@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# reroll-sync sqlite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
