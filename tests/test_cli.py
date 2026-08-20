@@ -37,3 +37,54 @@ def test_cli_init_reports_schema_mismatch(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Schema mismatch" in captured.err
     assert "pypi_index" in captured.err
+
+
+def test_cli_sync_index_reports_schema_mismatch(tmp_path, capsys):
+    db_path = tmp_path / "bad.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE pypi_index (name TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    exit_code = main(["sync-index", str(db_path)])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Schema mismatch" in captured.err
+
+
+def test_cli_sync_index_against_real_pypi_populates_one_project(tmp_path, capsys):
+    """Integration test: hits the real PyPI simple index over the network."""
+    db_path = tmp_path / "reroll_sync.db"
+
+    exit_code = main(["sync-index", str(db_path), "--limit", "1", "--timeout", "60"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Synced" in captured.out
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        index_rows = conn.execute("SELECT name, serial, updated_at FROM pypi_index").fetchall()
+        assert len(index_rows) == 1
+        name, serial, updated_at = index_rows[0]
+        assert isinstance(name, str)
+        assert name
+        assert isinstance(serial, int)
+        assert updated_at
+
+        wheel_rows = conn.execute(
+            "SELECT filename, project, pypi_simple, conda_name, skip_reason, "
+            "metadata_downloaded_at, wheel_metadata, metadata_reroll_version, repodata, "
+            "name_conversions, repodata_reroll_version, updated_at FROM wheels"
+        ).fetchall()
+        assert len(wheel_rows) >= 1
+        for row in wheel_rows:
+            filename, project, pypi_simple, *nullable_fields, wheel_updated_at = row
+            assert filename.endswith(".whl")
+            assert project == name
+            assert pypi_simple
+            assert wheel_updated_at
+            assert nullable_fields == [None] * 8
+    finally:
+        conn.close()

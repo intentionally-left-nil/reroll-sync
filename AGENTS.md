@@ -65,6 +65,11 @@ directly grows the edge-case corpus the codebase is trying to build.
   (each a helper cluster serving its own public function or class), that's
   a hint to split it into a package of smaller, single-concern modules
   rather than reordering within the one file.
+- Never hand-format code (wrapping lines, adjusting whitespace/indentation
+  to satisfy line length, etc.) with the edit tool. Write code in whatever
+  shape is natural, then run `make format` (`ruff format .`) to reformat
+  it. If `make lint` reports something `ruff format` doesn't fix, address
+  the underlying code, not its layout.
 
 ## Docstrings and comments describe now, not history
 
