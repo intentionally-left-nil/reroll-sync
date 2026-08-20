@@ -27,12 +27,22 @@ def test_compute_stats_counts_projects_and_wheels(tmp_path):
             ("numpy", 1, "2024-01-01T00:00:00+00:00"),
         )
         conn.execute(
-            "INSERT INTO wheels (filename, project, updated_at) VALUES (?, ?, ?)",
-            ("numpy-1.0-py3-none-any.whl", "numpy", "2024-01-01T00:00:00+00:00"),
+            "INSERT INTO wheels (filename, project, pypi_simple, updated_at) VALUES (?, ?, ?, ?)",
+            (
+                "numpy-1.0-py3-none-any.whl",
+                "numpy",
+                '{"filename": "numpy-1.0-py3-none-any.whl"}',
+                "2024-01-01T00:00:00+00:00",
+            ),
         )
         conn.execute(
-            "INSERT INTO wheels (filename, project, updated_at) VALUES (?, ?, ?)",
-            ("numpy-2.0-py3-none-any.whl", "numpy", "2024-01-01T00:00:00+00:00"),
+            "INSERT INTO wheels (filename, project, pypi_simple, updated_at) VALUES (?, ?, ?, ?)",
+            (
+                "numpy-2.0-py3-none-any.whl",
+                "numpy",
+                '{"filename": "numpy-2.0-py3-none-any.whl"}',
+                "2024-01-01T00:00:00+00:00",
+            ),
         )
         conn.commit()
 

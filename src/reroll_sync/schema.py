@@ -95,7 +95,7 @@ WHEELS = Table(
         Column("filename", "TEXT", primary_key=True, not_null=True),
         Column("project", "TEXT", not_null=True),
         Column("conda_name", "TEXT"),
-        Column("pypi_simple", "TEXT"),
+        Column("pypi_simple", "TEXT", not_null=True),
         Column("skip_reason", "TEXT"),
         Column("metadata_downloaded_at", "TEXT"),
         Column("wheel_metadata", "TEXT"),

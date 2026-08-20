@@ -115,7 +115,7 @@ def test_init_fails_on_missing_name_conversions_column(tmp_path):
     conn.execute(
         "CREATE TABLE wheels ("
         "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT, "
-        "pypi_simple TEXT, skip_reason TEXT, metadata_downloaded_at TEXT, "
+        "pypi_simple TEXT NOT NULL, skip_reason TEXT, metadata_downloaded_at TEXT, "
         "wheel_metadata TEXT, metadata_reroll_version TEXT, repodata TEXT, "
         "repodata_reroll_version TEXT, updated_at TEXT NOT NULL)"
     )
@@ -134,7 +134,7 @@ def test_init_fails_on_missing_conda_name_column(tmp_path):
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE wheels ("
-        "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, pypi_simple TEXT, "
+        "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, pypi_simple TEXT NOT NULL, "
         "skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT, "
         "metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT, "
         "repodata_reroll_version TEXT, updated_at TEXT NOT NULL)"
@@ -204,7 +204,7 @@ def test_init_fails_on_missing_index(tmp_path):
     conn.execute(
         "CREATE TABLE wheels ("
         "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT, "
-        "pypi_simple TEXT, "
+        "pypi_simple TEXT NOT NULL, "
         "skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT, "
         "metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT, "
         "repodata_reroll_version TEXT, updated_at TEXT NOT NULL)"
@@ -226,7 +226,7 @@ def test_init_fails_on_missing_foreign_key(tmp_path):
         """
         CREATE TABLE wheels (
             filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
-            pypi_simple TEXT,
+            pypi_simple TEXT NOT NULL,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
             metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
@@ -262,7 +262,7 @@ def test_init_fails_on_missing_reroll_version_not_null(tmp_path):
         """
         CREATE TABLE wheels (
             filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
-            pypi_simple TEXT,
+            pypi_simple TEXT NOT NULL,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
             metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
@@ -298,7 +298,7 @@ def test_init_fails_on_missing_wheels_filename_not_null(tmp_path):
         """
         CREATE TABLE wheels (
             filename TEXT PRIMARY KEY, project TEXT NOT NULL, conda_name TEXT,
-            pypi_simple TEXT,
+            pypi_simple TEXT NOT NULL,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
             metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
@@ -341,7 +341,7 @@ def test_init_fails_on_unexpected_index(tmp_path):
         """
         CREATE TABLE wheels (
             filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
-            pypi_simple TEXT,
+            pypi_simple TEXT NOT NULL,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
             metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
@@ -367,7 +367,7 @@ def test_init_fails_on_index_column_mismatch(tmp_path):
         """
         CREATE TABLE wheels (
             filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
-            pypi_simple TEXT,
+            pypi_simple TEXT NOT NULL,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
             metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
@@ -392,7 +392,7 @@ def test_init_fails_on_index_unique_mismatch(tmp_path):
         """
         CREATE TABLE wheels (
             filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
-            pypi_simple TEXT,
+            pypi_simple TEXT NOT NULL,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
             metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
