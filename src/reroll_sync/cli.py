@@ -3,6 +3,7 @@
 Usage:
     reroll-sync init [db_path]
     reroll-sync sync-index [db_path] [--timeout SECONDS] [--limit N]
+    reroll-sync stats [db_path]
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 import sys
 
 from .db import SchemaMismatchError, connect, init_db
+from .stats import compute_stats
 from .sync import sync_index
 
 DEFAULT_DB_PATH = "reroll_sync.db"
@@ -59,6 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max number of outdated projects to process in this run (default: no limit).",
     )
 
+    stats_parser = subparsers.add_parser(
+        "stats",
+        help="Show summary counts of the current state of the database.",
+    )
+    stats_parser.add_argument(
+        "db_path",
+        nargs="?",
+        default=DEFAULT_DB_PATH,
+        help=f"Path to the sqlite database file (default: {DEFAULT_DB_PATH})",
+    )
+
     return parser
 
 
@@ -74,6 +87,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         print(f"Initialized database at '{args.db_path}'")
+        return 0
+
+    if args.command == "stats":
+        conn = connect(args.db_path)
+        try:
+            result = compute_stats(conn)
+        finally:
+            conn.close()
+        print(
+            f"{result.projects_indexed} project(s) indexed, {result.wheels_synced} wheel(s) synced"
+        )
         return 0
 
     conn = connect(args.db_path)
