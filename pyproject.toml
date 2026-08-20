@@ -1,0 +1,74 @@
+[project]
+name = "reroll-sync"
+version = "0.1.0"
+description = "Backend tools to keep repodata.json in sync with a pypi wheel index"
+readme = "README.md"
+authors = [
+    { name = "Anil Kulkarni" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+reroll-sync = "reroll_sync:main"
+reroll_sync = "reroll_sync:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+# Dev-only dependencies (PEP 735). Kept out of [project.dependencies] so the
+# published package never pulls in test/lint/type-check tooling.
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "ty>=0.0.1a1",
+]
+
+[tool.pytest.ini_options]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=reroll_sync",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["reroll_sync"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+target-version = "py313"
+src = ["src", "tests"]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "PT",  # flake8-pytest-style
+]
+
+[tool.ty.environment]
+python = "./.venv"
+root = ["./src", "."]
