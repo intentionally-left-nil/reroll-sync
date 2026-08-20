@@ -5,7 +5,9 @@ from botocore.exceptions import ClientError
 from reroll_sync.r2_client import (
     R2Config,
     R2ConfigError,
+    R2DownloadError,
     R2UploadError,
+    download_bytes,
     r2_config_from_env,
     upload_bytes,
 )
@@ -105,6 +107,57 @@ def test_upload_bytes_wraps_client_error(monkeypatch):
 
     with pytest.raises(R2UploadError) as exc_info:
         upload_bytes(config, "42", b"data")
+
+    assert "42" in str(exc_info.value)
+    assert "b" in str(exc_info.value)
+
+
+def test_download_bytes_gets_object_with_configured_client(monkeypatch):
+    config = R2Config(
+        account_id="acct123", access_key_id="key123", secret_access_key="secret123", bucket="b"
+    )
+    captured_client_kwargs: dict = {}
+    captured_get_kwargs: dict = {}
+
+    class _FakeBody:
+        def read(self):
+            return b"metadata bytes"
+
+    class _FakeClient:
+        def get_object(self, **kwargs):
+            captured_get_kwargs.update(kwargs)
+            return {"Body": _FakeBody()}
+
+    def _fake_client(service_name, **kwargs):
+        captured_client_kwargs["service_name"] = service_name
+        captured_client_kwargs.update(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(boto3, "client", _fake_client)
+
+    result = download_bytes(config, "42")
+
+    assert captured_client_kwargs["service_name"] == "s3"
+    assert captured_client_kwargs["endpoint_url"] == "https://acct123.r2.cloudflarestorage.com"
+    assert captured_client_kwargs["aws_access_key_id"] == "key123"
+    assert captured_client_kwargs["aws_secret_access_key"] == "secret123"
+    assert captured_get_kwargs == {"Bucket": "b", "Key": "42"}
+    assert result == b"metadata bytes"
+
+
+def test_download_bytes_wraps_client_error(monkeypatch):
+    config = R2Config(
+        account_id="acct123", access_key_id="key123", secret_access_key="secret123", bucket="b"
+    )
+
+    class _FakeClient:
+        def get_object(self, **kwargs):
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "nope"}}, "GetObject")
+
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeClient())
+
+    with pytest.raises(R2DownloadError) as exc_info:
+        download_bytes(config, "42")
 
     assert "42" in str(exc_info.value)
     assert "b" in str(exc_info.value)

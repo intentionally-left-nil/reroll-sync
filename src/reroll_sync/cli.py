@@ -4,11 +4,12 @@ Usage:
     reroll-sync init [db_path]
     reroll-sync sync-index [db_path] [--timeout SECONDS] [--limit N]
     reroll-sync sync-metadata [db_path] [--timeout SECONDS] [--limit N]
+    reroll-sync parse-metadata [db_path] [--timeout SECONDS] [--limit N]
     reroll-sync stats [db_path]
 
-``sync-metadata`` uploads to Cloudflare R2 and requires the environment
-variables ``R2_ACCOUNT_ID``, ``R2_ACCESS_KEY_ID``, ``R2_SECRET_ACCESS_KEY``,
-and ``R2_BUCKET`` to be set.
+``sync-metadata`` and ``parse-metadata`` read/write Cloudflare R2 and require
+the environment variables ``R2_ACCOUNT_ID``, ``R2_ACCESS_KEY_ID``,
+``R2_SECRET_ACCESS_KEY``, and ``R2_BUCKET`` to be set.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import argparse
 import sys
 
 from .db import SchemaMismatchError, connect, init_db
+from .metadata_parse import parse_metadata
 from .metadata_sync import sync_metadata
 from .r2_client import R2ConfigError, r2_config_from_env
 from .stats import compute_stats
@@ -103,6 +105,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max number of pending wheels to process in this run (default: no limit).",
     )
 
+    parse_parser = subparsers.add_parser(
+        "parse-metadata",
+        help="Parse each wheel's downloaded METADATA (from R2) with reroll.",
+    )
+    parse_parser.add_argument(
+        "db_path",
+        nargs="?",
+        default=DEFAULT_DB_PATH,
+        help=f"Path to the sqlite database file (default: {DEFAULT_DB_PATH})",
+    )
+    parse_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Max seconds to spend parsing in this run (default: no limit).",
+    )
+    parse_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max number of pending wheels to process in this run (default: no limit).",
+    )
+
     return parser
 
 
@@ -148,6 +173,24 @@ def main(argv: list[str] | None = None) -> int:
             f"({metadata_stats.wheels_skipped_no_metadata} skipped, "
             f"{metadata_stats.wheels_failed_hash_mismatch} hash mismatch(es))"
             + (" (stopped early: timeout reached)" if metadata_stats.stopped_early else "")
+        )
+        return 0
+
+    if args.command == "parse-metadata":
+        try:
+            r2_config = r2_config_from_env()
+        except R2ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        conn = connect(args.db_path)
+        try:
+            parse_stats = parse_metadata(conn, r2_config, timeout=args.timeout, limit=args.limit)
+        finally:
+            conn.close()
+        print(
+            f"Parsed {parse_stats.wheels_parsed}/{parse_stats.wheels_considered} "
+            f"wheel metadata file(s) ({parse_stats.wheels_failed} failed)"
+            + (" (stopped early: timeout reached)" if parse_stats.stopped_early else "")
         )
         return 0
 
