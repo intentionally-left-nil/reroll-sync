@@ -190,6 +190,30 @@ def test_cli_parse_metadata_reports_summary_with_no_pending_wheels(tmp_path, mon
     assert "Parsed 0/0" in captured.out
 
 
+def test_cli_sync_reroll_reports_schema_mismatch(tmp_path, capsys):
+    db_path = tmp_path / "bad.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE pypi_index (name TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    exit_code = main(["sync-reroll", str(db_path)])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Schema mismatch" in captured.err
+
+
+def test_cli_sync_reroll_reports_summary_with_no_pending_wheels(tmp_path, capsys):
+    db_path = tmp_path / "reroll_sync.db"
+
+    exit_code = main(["sync-reroll", str(db_path), "--limit", "5", "--timeout", "10"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Converted 0/0" in captured.out
+
+
 def test_cli_sync_index_against_real_pypi_populates_one_project(tmp_path, capsys):
     """Integration test: hits the real PyPI simple index over the network."""
     db_path = tmp_path / "reroll_sync.db"

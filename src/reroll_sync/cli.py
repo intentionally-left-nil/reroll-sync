@@ -5,6 +5,7 @@ Usage:
     reroll-sync sync-index [db_path] [--timeout SECONDS] [--limit N]
     reroll-sync sync-metadata [db_path] [--timeout SECONDS] [--limit N]
     reroll-sync parse-metadata [db_path] [--timeout SECONDS] [--limit N]
+    reroll-sync sync-reroll [db_path] [--timeout SECONDS] [--limit N]
     reroll-sync stats [db_path]
 
 ``sync-metadata`` and ``parse-metadata`` read/write Cloudflare R2 and require
@@ -21,6 +22,7 @@ from .db import SchemaMismatchError, connect, init_db
 from .metadata_parse import parse_metadata
 from .metadata_sync import sync_metadata
 from .r2_client import R2ConfigError, r2_config_from_env
+from .reroll_convert import sync_reroll
 from .stats import compute_stats
 from .sync import sync_index
 
@@ -128,6 +130,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max number of pending wheels to process in this run (default: no limit).",
     )
 
+    reroll_parser = subparsers.add_parser(
+        "sync-reroll",
+        help="Convert each wheel's parsed METADATA into repodata record(s) with reroll.",
+    )
+    reroll_parser.add_argument(
+        "db_path",
+        nargs="?",
+        default=DEFAULT_DB_PATH,
+        help=f"Path to the sqlite database file (default: {DEFAULT_DB_PATH})",
+    )
+    reroll_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Max seconds to spend converting in this run (default: no limit).",
+    )
+    reroll_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max number of pending wheels to process in this run (default: no limit).",
+    )
+
     return parser
 
 
@@ -191,6 +216,19 @@ def main(argv: list[str] | None = None) -> int:
             f"Parsed {parse_stats.wheels_parsed}/{parse_stats.wheels_considered} "
             f"wheel metadata file(s) ({parse_stats.wheels_failed} failed)"
             + (" (stopped early: timeout reached)" if parse_stats.stopped_early else "")
+        )
+        return 0
+
+    if args.command == "sync-reroll":
+        conn = connect(args.db_path)
+        try:
+            reroll_stats = sync_reroll(conn, timeout=args.timeout, limit=args.limit)
+        finally:
+            conn.close()
+        print(
+            f"Converted {reroll_stats.wheels_converted}/{reroll_stats.wheels_considered} "
+            f"wheel(s) to repodata ({reroll_stats.wheels_failed} failed)"
+            + (" (stopped early: timeout reached)" if reroll_stats.stopped_early else "")
         )
         return 0
 
