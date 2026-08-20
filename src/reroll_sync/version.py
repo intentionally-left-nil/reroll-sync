@@ -10,9 +10,6 @@ database at a time, so it carries no information beyond what a row's
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version
+from reroll import __version__
 
-try:
-    REROLL_VERSION = version("py-reroll")
-except PackageNotFoundError:
-    REROLL_VERSION = "unknown"
+REROLL_VERSION = __version__

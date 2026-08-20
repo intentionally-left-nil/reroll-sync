@@ -979,7 +979,7 @@ wheels = [
 
 [[package]]
 name = "py-reroll"
-version = "0.3.1"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "conda-lock" },
@@ -989,9 +989,9 @@ dependencies = [
     { name = "py-rattler" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/77/8e/6e597eda6e6615ef05ce1a3a953ced13d0e29a1433abd0496abde6cbccc6/py_reroll-0.3.1.tar.gz", hash = "sha256:d7a9d8c98e654eceded2cf79b4043d40c023d9888020bc23929aa1d826cc82fd", size = 66754, upload-time = "2026-08-17T06:48:39.742Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/23/1f/46dea5a1758fb138e2425c87e7bbe6eee63e6596ad7958e15e8e4ab4cd26/py_reroll-0.4.0.tar.gz", hash = "sha256:20a10406ed7608a166cd58f38bd0b2826f3d64e8abf214c70ed829a450be6de9", size = 68509, upload-time = "2026-08-20T07:23:37.07Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/10/76ae9529c1de9fa98dfb8929ac8c07b98a5a40e36b9baaad494d91cffe1d/py_reroll-0.3.1-py3-none-any.whl", hash = "sha256:ac250eab3b7cf3b8e84555c5d1602f3c844fc8b9c271e735796316b724b7625a", size = 90665, upload-time = "2026-08-17T06:48:38.488Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/d5/b88bad7227b97e8dc1f9d7548e2c90bd4a79f4cad5b62904acc462865bd2/py_reroll-0.4.0-py3-none-any.whl", hash = "sha256:3afcfad288bf764d67651991975b73c5a7e6fe2d18db18f8ce2d7656dfd55b21", size = 92616, upload-time = "2026-08-20T07:23:35.763Z" },
 ]
 
 [[package]]
@@ -1292,7 +1292,7 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.75" },
     { name = "frozendict", specifier = ">=2.4.7" },
-    { name = "py-reroll", specifier = ">=0.3.1" },
+    { name = "py-reroll", specifier = ">=0.4.0" },
 ]
 
 [package.metadata.requires-dev]

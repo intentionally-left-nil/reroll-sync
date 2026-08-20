@@ -1,25 +1,7 @@
-import importlib
+import reroll
 
 import reroll_sync.version as version_module
 
 
-def test_reroll_version_matches_installed_package_metadata():
-    from importlib.metadata import version
-
-    assert version("py-reroll") == version_module.REROLL_VERSION
-
-
-def test_reroll_version_falls_back_when_package_not_installed(monkeypatch):
-    from importlib.metadata import PackageNotFoundError
-
-    def _raise(_name: str) -> str:
-        raise PackageNotFoundError
-
-    monkeypatch.setattr("importlib.metadata.version", _raise)
-
-    importlib.reload(version_module)
-
-    assert version_module.REROLL_VERSION == "unknown"
-
-    monkeypatch.undo()
-    importlib.reload(version_module)
+def test_reroll_version_matches_reroll_dunder_version():
+    assert reroll.__version__ == version_module.REROLL_VERSION
