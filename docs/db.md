@@ -13,7 +13,7 @@ The sqlite database will have the following tables:
 * `filename` (unique, indexed, non-null) - the actual name of the wheel, not normalized, depending on pypi to keep globally unique
 * `project` (indexed, non-null) - the project the wheel refers to
 * `conda_name` (indexed) - Refers to the conda name of the project (may be the same as the pypi project name) 
-* `pypi_simple` - The JSON from the simple/projects API corresponding to the wheel
+* `pypi_simple` (non-null) - The JSON from the simple/projects API corresponding to the wheel
 * `skip_reason` - a structured string as to why not to partially or fully parse the wheel
 * `metadata_downloaded_at` - The time the whl.metadata file was downloaded, NULL if not existing
 * `wheel_metadata` - The parsed & cleaned data from a METADATA file

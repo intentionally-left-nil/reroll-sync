@@ -176,8 +176,15 @@ def test_only_whl_files_are_inserted_into_wheels(conn):
 
 def test_conflicting_wheel_row_is_not_overwritten(conn):
     conn.execute(
-        "INSERT INTO wheels (filename, project, conda_name, updated_at) VALUES (?, ?, ?, ?)",
-        ("numpy-1.0-py3-none-any.whl", "numpy", "numpy-conda", "2024-01-01T00:00:00+00:00"),
+        "INSERT INTO wheels (filename, project, conda_name, pypi_simple, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            "numpy-1.0-py3-none-any.whl",
+            "numpy",
+            "numpy-conda",
+            '{"filename": "numpy-1.0-py3-none-any.whl"}',
+            "2024-01-01T00:00:00+00:00",
+        ),
     )
     conn.commit()
     index = _index(("numpy", 1))

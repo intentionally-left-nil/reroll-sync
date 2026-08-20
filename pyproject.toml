@@ -7,7 +7,9 @@ authors = [
     { name = "Anil Kulkarni" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "boto3>=1.43.75",
+]
 
 [project.scripts]
 reroll-sync = "reroll_sync:main"

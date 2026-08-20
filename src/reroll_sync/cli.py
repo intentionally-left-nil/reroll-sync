@@ -3,7 +3,12 @@
 Usage:
     reroll-sync init [db_path]
     reroll-sync sync-index [db_path] [--timeout SECONDS] [--limit N]
+    reroll-sync sync-metadata [db_path] [--timeout SECONDS] [--limit N]
     reroll-sync stats [db_path]
+
+``sync-metadata`` uploads to Cloudflare R2 and requires the environment
+variables ``R2_ACCOUNT_ID``, ``R2_ACCESS_KEY_ID``, ``R2_SECRET_ACCESS_KEY``,
+and ``R2_BUCKET`` to be set.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ import argparse
 import sys
 
 from .db import SchemaMismatchError, connect, init_db
+from .metadata_sync import sync_metadata
+from .r2_client import R2ConfigError, r2_config_from_env
 from .stats import compute_stats
 from .sync import sync_index
 
@@ -72,6 +79,30 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Path to the sqlite database file (default: {DEFAULT_DB_PATH})",
     )
 
+    metadata_parser = subparsers.add_parser(
+        "sync-metadata",
+        help="Download each wheel's .metadata sidecar and upload it to R2, keyed by rowid.",
+    )
+    metadata_parser.add_argument(
+        "db_path",
+        nargs="?",
+        default=DEFAULT_DB_PATH,
+        help=f"Path to the sqlite database file (default: {DEFAULT_DB_PATH})",
+    )
+    metadata_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Max seconds to spend syncing, and the per-request network timeout "
+        "(default: no limit).",
+    )
+    metadata_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max number of pending wheels to process in this run (default: no limit).",
+    )
+
     return parser
 
 
@@ -97,6 +128,26 @@ def main(argv: list[str] | None = None) -> int:
             conn.close()
         print(
             f"{result.projects_indexed} project(s) indexed, {result.wheels_synced} wheel(s) synced"
+        )
+        return 0
+
+    if args.command == "sync-metadata":
+        try:
+            r2_config = r2_config_from_env()
+        except R2ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        conn = connect(args.db_path)
+        try:
+            metadata_stats = sync_metadata(conn, r2_config, timeout=args.timeout, limit=args.limit)
+        finally:
+            conn.close()
+        print(
+            f"Uploaded {metadata_stats.wheels_uploaded}/{metadata_stats.wheels_considered} "
+            f"wheel metadata file(s) to R2 "
+            f"({metadata_stats.wheels_skipped_no_metadata} skipped, "
+            f"{metadata_stats.wheels_failed_hash_mismatch} hash mismatch(es))"
+            + (" (stopped early: timeout reached)" if metadata_stats.stopped_early else "")
         )
         return 0
 
