@@ -80,7 +80,7 @@ class Table:
 PYPI_INDEX = Table(
     name="pypi_index",
     columns=(
-        Column("name", "TEXT", primary_key=True),
+        Column("name", "TEXT", primary_key=True, not_null=True),
         Column("serial", "INTEGER", not_null=True),
         Column("updated_at", "TEXT", not_null=True),
     ),
@@ -92,18 +92,23 @@ PYPI_INDEX = Table(
 WHEELS = Table(
     name="wheels",
     columns=(
-        Column("filename", "TEXT", primary_key=True),
+        Column("filename", "TEXT", primary_key=True, not_null=True),
         Column("project", "TEXT", not_null=True),
+        Column("conda_name", "TEXT"),
         Column("pypi_simple", "TEXT"),
         Column("skip_reason", "TEXT"),
         Column("metadata_downloaded_at", "TEXT"),
         Column("wheel_metadata", "TEXT"),
         Column("metadata_reroll_version", "TEXT"),
         Column("repodata", "TEXT"),
+        Column("name_conversions", "TEXT"),
         Column("repodata_reroll_version", "TEXT"),
         Column("updated_at", "TEXT", not_null=True),
     ),
-    indexes=(Index("ix_wheels_project", ("project",)),),
+    indexes=(
+        Index("ix_wheels_project", ("project",)),
+        Index("ix_wheels_conda_name", ("conda_name",)),
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -122,7 +127,7 @@ ERRORS = Table(
         Column("error_category", "TEXT", not_null=True),
         Column("error_subcategory", "TEXT"),
         Column("details", "TEXT"),
-        Column("reroll_version", "TEXT"),
+        Column("reroll_version", "TEXT", not_null=True),
         Column("created_at", "TEXT", not_null=True),
     ),
     indexes=(Index("ix_errors_wheel_filename", ("wheel_filename",)),),

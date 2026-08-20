@@ -79,7 +79,9 @@ def test_init_uses_default_path_argument(tmp_path, monkeypatch):
 def test_init_fails_on_missing_column(tmp_path):
     db_path = tmp_path / "reroll_sync.db"
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE pypi_index (name TEXT PRIMARY KEY, serial INTEGER NOT NULL)")
+    conn.execute(
+        "CREATE TABLE pypi_index (name TEXT PRIMARY KEY NOT NULL, serial INTEGER NOT NULL)"
+    )
     conn.commit()
     conn.close()
 
@@ -90,12 +92,69 @@ def test_init_fails_on_missing_column(tmp_path):
     assert any("updated_at" in p for p in exc_info.value.problems)
 
 
+def test_init_fails_on_missing_primary_key_not_null(tmp_path):
+    db_path = tmp_path / "reroll_sync.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE pypi_index (name TEXT PRIMARY KEY, serial INTEGER NOT NULL, "
+        "updated_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMismatchError) as exc_info:
+        init_db(db_path)
+
+    assert exc_info.value.table_name == "pypi_index"
+    assert any("name" in p and "NOT NULL" in p for p in exc_info.value.problems)
+
+
+def test_init_fails_on_missing_name_conversions_column(tmp_path):
+    db_path = tmp_path / "reroll_sync.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE wheels ("
+        "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT, "
+        "pypi_simple TEXT, skip_reason TEXT, metadata_downloaded_at TEXT, "
+        "wheel_metadata TEXT, metadata_reroll_version TEXT, repodata TEXT, "
+        "repodata_reroll_version TEXT, updated_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMismatchError) as exc_info:
+        init_db(db_path)
+
+    assert exc_info.value.table_name == "wheels"
+    assert any("missing column 'name_conversions'" in p for p in exc_info.value.problems)
+
+
+def test_init_fails_on_missing_conda_name_column(tmp_path):
+    db_path = tmp_path / "reroll_sync.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE wheels ("
+        "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, pypi_simple TEXT, "
+        "skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT, "
+        "metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT, "
+        "repodata_reroll_version TEXT, updated_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMismatchError) as exc_info:
+        init_db(db_path)
+
+    assert exc_info.value.table_name == "wheels"
+    assert any("missing column 'conda_name'" in p for p in exc_info.value.problems)
+
+
 def test_init_fails_on_unexpected_column(tmp_path):
     db_path = tmp_path / "reroll_sync.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE pypi_index ("
-        "name TEXT PRIMARY KEY, serial INTEGER NOT NULL, "
+        "name TEXT PRIMARY KEY NOT NULL, serial INTEGER NOT NULL, "
         "updated_at TEXT NOT NULL, extra_column TEXT)"
     )
     conn.commit()
@@ -112,7 +171,7 @@ def test_init_fails_on_wrong_column_type(tmp_path):
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE pypi_index ("
-        "name TEXT PRIMARY KEY, serial TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        "name TEXT PRIMARY KEY NOT NULL, serial TEXT NOT NULL, updated_at TEXT NOT NULL)"
     )
     conn.commit()
     conn.close()
@@ -127,7 +186,8 @@ def test_init_fails_on_wrong_not_null(tmp_path):
     db_path = tmp_path / "reroll_sync.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "CREATE TABLE pypi_index (name TEXT PRIMARY KEY, serial INTEGER, updated_at TEXT NOT NULL)"
+        "CREATE TABLE pypi_index (name TEXT PRIMARY KEY NOT NULL, serial INTEGER, "
+        "updated_at TEXT NOT NULL)"
     )
     conn.commit()
     conn.close()
@@ -143,9 +203,10 @@ def test_init_fails_on_missing_index(tmp_path):
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE wheels ("
-        "filename TEXT PRIMARY KEY, project TEXT NOT NULL, pypi_simple TEXT, "
+        "filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT, "
+        "pypi_simple TEXT, "
         "skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT, "
-        "metadata_reroll_version TEXT, repodata TEXT, "
+        "metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT, "
         "repodata_reroll_version TEXT, updated_at TEXT NOT NULL)"
     )
     conn.commit()
@@ -164,15 +225,53 @@ def test_init_fails_on_missing_foreign_key(tmp_path):
     conn.executescript(
         """
         CREATE TABLE wheels (
-            filename TEXT PRIMARY KEY, project TEXT NOT NULL, pypi_simple TEXT,
+            filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
+            pypi_simple TEXT,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
-            metadata_reroll_version TEXT, repodata TEXT,
+            metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
         );
         CREATE INDEX ix_wheels_project ON wheels (project);
+        CREATE INDEX ix_wheels_conda_name ON wheels (conda_name);
         CREATE TABLE errors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             wheel_filename TEXT NOT NULL,
+            error_category TEXT NOT NULL,
+            error_subcategory TEXT,
+            details TEXT,
+            reroll_version TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_errors_wheel_filename ON errors (wheel_filename);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMismatchError) as exc_info:
+        init_db(db_path)
+
+    assert exc_info.value.table_name == "errors"
+    assert any("foreign key" in p for p in exc_info.value.problems)
+
+
+def test_init_fails_on_missing_reroll_version_not_null(tmp_path):
+    db_path = tmp_path / "reroll_sync.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE wheels (
+            filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
+            pypi_simple TEXT,
+            skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
+            metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
+            repodata_reroll_version TEXT, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_wheels_project ON wheels (project);
+        CREATE INDEX ix_wheels_conda_name ON wheels (conda_name);
+        CREATE TABLE errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wheel_filename TEXT NOT NULL REFERENCES wheels(filename),
             error_category TEXT NOT NULL,
             error_subcategory TEXT,
             details TEXT,
@@ -189,7 +288,32 @@ def test_init_fails_on_missing_foreign_key(tmp_path):
         init_db(db_path)
 
     assert exc_info.value.table_name == "errors"
-    assert any("foreign key" in p for p in exc_info.value.problems)
+    assert any("reroll_version" in p and "NOT NULL" in p for p in exc_info.value.problems)
+
+
+def test_init_fails_on_missing_wheels_filename_not_null(tmp_path):
+    db_path = tmp_path / "reroll_sync.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE wheels (
+            filename TEXT PRIMARY KEY, project TEXT NOT NULL, conda_name TEXT,
+            pypi_simple TEXT,
+            skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
+            metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
+            repodata_reroll_version TEXT, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_wheels_project ON wheels (project);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMismatchError) as exc_info:
+        init_db(db_path)
+
+    assert exc_info.value.table_name == "wheels"
+    assert any("filename" in p and "NOT NULL" in p for p in exc_info.value.problems)
 
 
 def test_init_fails_on_unexpected_foreign_key(tmp_path):
@@ -197,7 +321,7 @@ def test_init_fails_on_unexpected_foreign_key(tmp_path):
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE pypi_index ("
-        "name TEXT PRIMARY KEY REFERENCES wheels(filename), "
+        "name TEXT PRIMARY KEY NOT NULL REFERENCES wheels(filename), "
         "serial INTEGER NOT NULL, updated_at TEXT NOT NULL)"
     )
     conn.commit()
@@ -216,9 +340,10 @@ def test_init_fails_on_unexpected_index(tmp_path):
     conn.executescript(
         """
         CREATE TABLE wheels (
-            filename TEXT PRIMARY KEY, project TEXT NOT NULL, pypi_simple TEXT,
+            filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
+            pypi_simple TEXT,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
-            metadata_reroll_version TEXT, repodata TEXT,
+            metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
         );
         CREATE INDEX ix_wheels_project ON wheels (project);
@@ -241,9 +366,10 @@ def test_init_fails_on_index_column_mismatch(tmp_path):
     conn.executescript(
         """
         CREATE TABLE wheels (
-            filename TEXT PRIMARY KEY, project TEXT NOT NULL, pypi_simple TEXT,
+            filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
+            pypi_simple TEXT,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
-            metadata_reroll_version TEXT, repodata TEXT,
+            metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
         );
         CREATE INDEX ix_wheels_project ON wheels (skip_reason);
@@ -265,9 +391,10 @@ def test_init_fails_on_index_unique_mismatch(tmp_path):
     conn.executescript(
         """
         CREATE TABLE wheels (
-            filename TEXT PRIMARY KEY, project TEXT NOT NULL, pypi_simple TEXT,
+            filename TEXT PRIMARY KEY NOT NULL, project TEXT NOT NULL, conda_name TEXT,
+            pypi_simple TEXT,
             skip_reason TEXT, metadata_downloaded_at TEXT, wheel_metadata TEXT,
-            metadata_reroll_version TEXT, repodata TEXT,
+            metadata_reroll_version TEXT, repodata TEXT, name_conversions TEXT,
             repodata_reroll_version TEXT, updated_at TEXT NOT NULL
         );
         CREATE UNIQUE INDEX ix_wheels_project ON wheels (project);
@@ -287,7 +414,8 @@ def test_init_fails_on_primary_key_mismatch(tmp_path):
     db_path = tmp_path / "reroll_sync.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "CREATE TABLE pypi_index (name TEXT, serial INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+        "CREATE TABLE pypi_index (name TEXT NOT NULL, serial INTEGER NOT NULL, "
+        "updated_at TEXT NOT NULL)"
     )
     conn.commit()
     conn.close()
