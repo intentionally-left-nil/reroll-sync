@@ -51,6 +51,29 @@ class ProjectResponse:
     files: tuple[ProjectFile, ...]
 
 
+def metadata_hashes(raw: dict[str, Any]) -> dict[str, str] | None:
+    """Return the ``.metadata`` file's hash algorithm -> hex digest mapping.
+
+    Reads the PEP 714 ``core-metadata`` field and the legacy PEP 658
+    ``dist-info-metadata`` field of a file's simple-index entry. Either field
+    may be ``False`` (no separate metadata file), ``True`` (a metadata file
+    exists but the index publishes no hash for it), or an object such as
+    ``{"sha256": "..."}`` (a metadata file exists with its own hash, distinct
+    from the wheel's own hash). Returns ``None`` if neither field indicates a
+    metadata file is available, ``{}`` if one is available but unhashed, or
+    the hash mapping when one is published. An object value from either field
+    is preferred over a bare ``True`` from either field.
+    """
+    values = (raw.get("core-metadata"), raw.get("dist-info-metadata"))
+    for value in values:
+        if isinstance(value, dict):
+            return value
+    for value in values:
+        if value is True:
+            return {}
+    return None
+
+
 def fetch_simple_index(timeout: float | None = None) -> SimpleIndexResponse:
     """Fetch and parse the PyPI ``/simple/`` project index."""
     data = _get_json(SIMPLE_INDEX_URL, timeout)

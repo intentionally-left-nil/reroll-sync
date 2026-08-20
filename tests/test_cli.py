@@ -101,6 +101,48 @@ def test_cli_stats_reports_counts_with_data(tmp_path, capsys):
     assert "1 wheel(s) synced" in captured.out
 
 
+def test_cli_sync_metadata_reports_schema_mismatch(tmp_path, capsys):
+    db_path = tmp_path / "bad.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE pypi_index (name TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    exit_code = main(["sync-metadata", str(db_path)])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Schema mismatch" in captured.err
+
+
+def test_cli_sync_metadata_reports_missing_r2_config(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "reroll_sync.db"
+    monkeypatch.delenv("R2_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("R2_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("R2_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("R2_BUCKET", raising=False)
+
+    exit_code = main(["sync-metadata", str(db_path)])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "R2_ACCOUNT_ID" in captured.err
+
+
+def test_cli_sync_metadata_reports_summary_with_no_pending_wheels(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "reroll_sync.db"
+    monkeypatch.setenv("R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("R2_BUCKET", "bucket")
+
+    exit_code = main(["sync-metadata", str(db_path), "--limit", "5", "--timeout", "10"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Uploaded 0/0" in captured.out
+
+
 def test_cli_sync_index_against_real_pypi_populates_one_project(tmp_path, capsys):
     """Integration test: hits the real PyPI simple index over the network."""
     db_path = tmp_path / "reroll_sync.db"

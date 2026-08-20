@@ -7,6 +7,7 @@ from reroll_sync.pypi_client import (
     IndexProject,
     fetch_project,
     fetch_simple_index,
+    metadata_hashes,
 )
 
 
@@ -96,3 +97,41 @@ def test_fetch_project_url_encodes_name(monkeypatch):
 
     request, _timeout = captured[0]
     assert request.full_url == f"{SIMPLE_INDEX_URL}weird%20name%2Fslash/"
+
+
+def test_metadata_hashes_returns_none_when_unavailable():
+    assert metadata_hashes({"core-metadata": False, "dist-info-metadata": False}) is None
+
+
+def test_metadata_hashes_returns_none_when_fields_absent():
+    assert metadata_hashes({}) is None
+
+
+def test_metadata_hashes_returns_hashes_from_core_metadata_object():
+    raw = {"core-metadata": {"sha256": "abc123"}}
+    assert metadata_hashes(raw) == {"sha256": "abc123"}
+
+
+def test_metadata_hashes_returns_empty_dict_when_core_metadata_is_true():
+    raw = {"core-metadata": True}
+    assert metadata_hashes(raw) == {}
+
+
+def test_metadata_hashes_falls_back_to_legacy_dist_info_metadata_object():
+    raw = {"core-metadata": False, "dist-info-metadata": {"sha256": "legacy123"}}
+    assert metadata_hashes(raw) == {"sha256": "legacy123"}
+
+
+def test_metadata_hashes_falls_back_to_legacy_dist_info_metadata_true():
+    raw = {"core-metadata": False, "dist-info-metadata": True}
+    assert metadata_hashes(raw) == {}
+
+
+def test_metadata_hashes_prefers_core_metadata_object_over_legacy_true():
+    raw = {"core-metadata": {"sha256": "new123"}, "dist-info-metadata": True}
+    assert metadata_hashes(raw) == {"sha256": "new123"}
+
+
+def test_metadata_hashes_prefers_any_object_over_any_true():
+    raw = {"core-metadata": True, "dist-info-metadata": {"sha256": "legacy123"}}
+    assert metadata_hashes(raw) == {"sha256": "legacy123"}
