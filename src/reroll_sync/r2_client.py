@@ -19,6 +19,10 @@ class R2UploadError(Exception):
     """Raised when an upload to R2 fails."""
 
 
+class R2DownloadError(Exception):
+    """Raised when a download from R2 fails."""
+
+
 @dataclass(frozen=True)
 class R2Config:
     """R2 bucket location and credentials."""
@@ -63,4 +67,21 @@ def upload_bytes(config: R2Config, key: str, data: bytes) -> None:
     except (BotoCoreError, ClientError) as exc:
         raise R2UploadError(
             f"Failed to upload key '{key}' to bucket '{config.bucket}': {exc}"
+        ) from exc
+
+
+def download_bytes(config: R2Config, key: str) -> bytes:
+    """Download and return the bytes stored at ``key`` in ``config``'s bucket."""
+    client = boto3.client(
+        "s3",
+        endpoint_url=config.endpoint_url,
+        aws_access_key_id=config.access_key_id,
+        aws_secret_access_key=config.secret_access_key,
+    )
+    try:
+        response = client.get_object(Bucket=config.bucket, Key=key)
+        return response["Body"].read()
+    except (BotoCoreError, ClientError) as exc:
+        raise R2DownloadError(
+            f"Failed to download key '{key}' from bucket '{config.bucket}': {exc}"
         ) from exc

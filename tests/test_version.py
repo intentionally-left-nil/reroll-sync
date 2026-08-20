@@ -6,7 +6,7 @@ import reroll_sync.version as version_module
 def test_reroll_version_matches_installed_package_metadata():
     from importlib.metadata import version
 
-    assert version("reroll-sync") == version_module.REROLL_VERSION
+    assert version("py-reroll") == version_module.REROLL_VERSION
 
 
 def test_reroll_version_falls_back_when_package_not_installed(monkeypatch):
@@ -21,4 +21,5 @@ def test_reroll_version_falls_back_when_package_not_installed(monkeypatch):
 
     assert version_module.REROLL_VERSION == "unknown"
 
+    monkeypatch.undo()
     importlib.reload(version_module)

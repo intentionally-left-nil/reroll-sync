@@ -21,10 +21,14 @@ from typing import Any
 from .metadata_download import fetch_metadata
 from .pypi_client import metadata_hashes
 from .r2_client import R2Config, R2UploadError, upload_bytes
-from .version import REROLL_VERSION
 
 FetchMetadata = Callable[[str, float | None], bytes]
 Upload = Callable[[R2Config, str, bytes], None]
+
+_NOT_A_REROLL_ERROR = "reroll-sync"
+"""``errors.reroll_version`` for an error that didn't come from the ``reroll``
+library -- the sha256 comparison here is fixed and doesn't vary with it.
+"""
 
 
 @dataclass(frozen=True)
@@ -159,7 +163,7 @@ def _record_hash_mismatch(
             "metadata_hash_mismatch",
             None,
             f"expected sha256={expected_sha256}, actual sha256={actual_sha256}",
-            REROLL_VERSION,
+            _NOT_A_REROLL_ERROR,
             datetime.now(UTC).isoformat(),
         ),
     )
