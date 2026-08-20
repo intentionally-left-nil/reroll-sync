@@ -10,7 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "boto3>=1.43.75",
     "frozendict>=2.4.7",
-    "py-reroll>=0.3.1",
+    "py-reroll>=0.4.0",
 ]
 
 [project.scripts]
