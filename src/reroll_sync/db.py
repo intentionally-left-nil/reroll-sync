@@ -61,8 +61,13 @@ class AutoVacuumError(Exception):
 
 
 def connect_writer(db_path: str | Path) -> sqlite3.Connection:
-    """Open the single runtime writer connection, creating the file if needed."""
-    conn = sqlite3.connect(str(db_path))
+    """Open the single runtime writer connection, creating the file if needed.
+
+    Uses ``check_same_thread=False``: the returned connection is constructed
+    on the caller's thread but is meant to be handed to a :class:`Writer`
+    (spec 06), which consumes it exclusively from its own background thread.
+    """
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")

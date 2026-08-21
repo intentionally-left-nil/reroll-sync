@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 import pytest
 
@@ -129,6 +130,31 @@ def test_connect_writer_reports_wal_journal_mode(tmp_path):
     finally:
         conn.close()
     assert mode == "wal"
+
+
+def test_connect_writer_connection_is_usable_from_a_different_thread(tmp_path):
+    # Writer (spec 06) constructs the connection on one thread and then
+    # runs its background daemon thread against it -- connect_writer must
+    # not bind the connection to its creating thread.
+    db_path = _init(tmp_path)
+    conn = connect_writer(db_path)
+    result: dict[str, object] = {}
+
+    def _use_from_other_thread() -> None:
+        try:
+            (value,) = conn.execute("SELECT 1").fetchone()
+            result["value"] = value
+        except BaseException as exc:  # noqa: BLE001
+            result["error"] = exc
+
+    thread = threading.Thread(target=_use_from_other_thread)
+    thread.start()
+    thread.join(timeout=5)
+    try:
+        assert "error" not in result, result.get("error")
+        assert result["value"] == 1
+    finally:
+        conn.close()
 
 
 def test_connect_reader_on_nonexistent_path_raises_without_creating_file(tmp_path):
