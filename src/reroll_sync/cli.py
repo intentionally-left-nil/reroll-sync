@@ -16,17 +16,36 @@ the environment variables ``R2_ACCOUNT_ID``, ``R2_ACCESS_KEY_ID``,
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
+from typing import NoReturn
 
 from .db import SchemaMismatchError, connect, init_db
-from .metadata_parse import parse_metadata
 from .metadata_sync import sync_metadata
-from .r2_client import R2ConfigError, r2_config_from_env
-from .reroll_convert import sync_reroll
+from .r2_client import R2Config, R2ConfigError, r2_config_from_env
 from .stats import compute_stats
 from .sync import sync_index
 
 DEFAULT_DB_PATH = "reroll_sync.db"
+
+
+def _parse_metadata(
+    conn: sqlite3.Connection,
+    r2_config: R2Config,
+    *,
+    timeout: float | None = None,
+    limit: int | None = None,
+) -> NoReturn:
+    raise NotImplementedError("parse-metadata is not yet implemented")
+
+
+def _sync_reroll(
+    conn: sqlite3.Connection,
+    *,
+    timeout: float | None = None,
+    limit: int | None = None,
+) -> NoReturn:
+    raise NotImplementedError("sync-reroll is not yet implemented")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -209,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         conn = connect(args.db_path)
         try:
-            parse_stats = parse_metadata(conn, r2_config, timeout=args.timeout, limit=args.limit)
+            parse_stats = _parse_metadata(conn, r2_config, timeout=args.timeout, limit=args.limit)
         finally:
             conn.close()
         print(
@@ -222,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync-reroll":
         conn = connect(args.db_path)
         try:
-            reroll_stats = sync_reroll(conn, timeout=args.timeout, limit=args.limit)
+            reroll_stats = _sync_reroll(conn, timeout=args.timeout, limit=args.limit)
         finally:
             conn.close()
         print(
