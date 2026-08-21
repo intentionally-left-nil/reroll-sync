@@ -255,6 +255,47 @@ def test_next_segment_id_ignores_unrelated_files_in_the_directory(tmp_path, conn
     _abandon(writer)
 
 
+# --- recover=False: safe read-only construction against a live daemon ----
+
+
+def test_recover_false_does_not_truncate_a_stale_open_segment(tmp_path, conn):
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    stale_path = segments_dir / "000005.open"
+    stale_path.write_bytes(b"leftover garbage bytes, no segments row at all")
+
+    ArchiveStore(segments_dir, conn, recover=False)
+
+    assert stale_path.read_bytes() == b"leftover garbage bytes, no segments row at all"
+
+
+def test_recover_false_does_not_truncate_a_live_daemons_actively_open_segment(tmp_path, conn):
+    """The exact danger a second, read-only `ArchiveStore` (e.g. from the
+    CLI's `verify-archive` command) must not cause: truncating a segment a
+    live daemon is still appending to, which looks identical to a crashed
+    writer's leftover (`sealed_at IS NULL`) from the outside.
+    """
+    segments_dir = tmp_path / "segments"
+    live_store = ArchiveStore(segments_dir, conn)
+    location = live_store.add(b"still being written by the live daemon")
+
+    ArchiveStore(segments_dir, conn, recover=False)  # a second, read-only-intentioned instance
+
+    live_store.seal_writer(live_store.current_writer())
+    assert live_store.get(location.sha256) == b"still being written by the live daemon"
+
+
+def test_recover_true_is_still_the_default(tmp_path, conn):
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    stale_path = segments_dir / "000005.open"
+    stale_path.write_bytes(b"leftover garbage bytes, no segments row at all")
+
+    ArchiveStore(segments_dir, conn)
+
+    assert stale_path.stat().st_size == 0
+
+
 # --- store creates its directory ---------------------------------------------
 
 

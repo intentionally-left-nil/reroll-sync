@@ -223,6 +223,52 @@ class StageMetrics:
     quarantine_count: int
 
 
+@dataclass(frozen=True)
+class SelectorPreview:
+    """A read-only count of what ``Dispatcher.reprocess(selector)`` would affect.
+
+    ``skips_to_clear_count`` is nonzero only for :class:`RerollVersionBelow`:
+    it is the only selector whose reprocess campaign deletes ``skips`` rows
+    (see ``_reprocess_chunk_op``).
+    """
+
+    wheel_count: int
+    skips_to_clear_count: int
+
+
+def preview_selector(
+    conn: sqlite3.Connection, selector: Selector, *, read_budget: float = 0.25
+) -> SelectorPreview:
+    """Count how many wheels ``Dispatcher.reprocess(selector)`` would touch, without writing.
+
+    ``conn`` is a read-only connection. Mirrors each selector's own chunk
+    query from ``reprocess()`` (never a table scan), just without the
+    ``LIMIT``/keyset pagination, so this always reflects exactly what a real
+    campaign would match.
+    """
+    if isinstance(selector, ProjectSelector):
+        sql, params = _project_count_query(selector.project)
+        return SelectorPreview(
+            wheel_count=_run_count(conn, sql, params, budget=read_budget),
+            skips_to_clear_count=0,
+        )
+    if isinstance(selector, StateSelector):
+        sql, params = _state_count_query(selector.state)
+        return SelectorPreview(
+            wheel_count=_run_count(conn, sql, params, budget=read_budget),
+            skips_to_clear_count=0,
+        )
+    if isinstance(selector, SkippedOnly):
+        sql, params = _state_count_query(WheelState.SKIPPED)
+        return SelectorPreview(
+            wheel_count=_run_count(conn, sql, params, budget=read_budget),
+            skips_to_clear_count=0,
+        )
+    if isinstance(selector, RerollVersionBelow):
+        return _preview_reroll_version_below(conn, selector.version, read_budget=read_budget)
+    raise TypeError(f"unsupported selector: {selector!r}")
+
+
 class Dispatcher:
     """Owns queue selection, outcome application, backoff, and reprocess campaigns.
 
@@ -753,6 +799,69 @@ def _reroll_version_skips_chunk_query(version: str, limit: int) -> tuple[str, li
         "ORDER BY sk.reroll_version LIMIT ?"
     )
     return sql, [version, int(WheelState.DELETED), limit]
+
+
+def _project_count_query(project: str) -> tuple[str, list[Any]]:
+    """The unpaginated count behind :func:`_project_chunks`'s ``ix_wheels_project`` seek."""
+    sql = "SELECT COUNT(*) FROM wheels WHERE project = ? AND state != ?"
+    return sql, [project, int(WheelState.DELETED)]
+
+
+def _state_count_query(state: WheelState) -> tuple[str, list[Any]]:
+    """The unpaginated count behind :func:`_state_chunks`'s ``ix_wheels_queue`` seek."""
+    sql = "SELECT COUNT(*) FROM wheels WHERE state = ? AND state != ?"
+    return sql, [int(state), int(WheelState.DELETED)]
+
+
+def _reroll_version_wheel_count_query(version: str) -> tuple[str, list[Any]]:
+    """Distinct-wheel count of everything :func:`_reroll_version_below_chunks` touches.
+
+    The union of its ``wheel_repodata``-side and ``skips``-side matches,
+    deduplicated by ``wheel_id``: :func:`_reprocess_chunk_op` clears both a
+    matching ``wheel_repodata`` row and a matching stale ``skips`` row for
+    the same wheel in one ``_apply`` call, so a wheel matching both sides
+    is touched by the real campaign exactly once, not twice.
+    """
+    sql = (
+        "SELECT COUNT(*) FROM ("
+        "SELECT wr.wheel_id AS wheel_id FROM wheel_repodata wr "
+        "JOIN wheels w ON w.id = wr.wheel_id WHERE wr.reroll_version < ? AND w.state != ? "
+        "UNION "
+        "SELECT sk.wheel_id AS wheel_id FROM skips sk JOIN wheels w ON w.id = sk.wheel_id "
+        "WHERE sk.permanent = 0 AND sk.reroll_version < ? AND w.state != ?"
+        ")"
+    )
+    return sql, [version, int(WheelState.DELETED), version, int(WheelState.DELETED)]
+
+
+def _reroll_version_skips_row_count_query(version: str) -> tuple[str, list[Any]]:
+    """Row count of exactly the ``skips`` rows :func:`_reprocess_chunk_op` deletes
+    for a :class:`RerollVersionBelow` campaign."""
+    sql = (
+        "SELECT COUNT(*) FROM skips sk JOIN wheels w ON w.id = sk.wheel_id "
+        "WHERE sk.permanent = 0 AND sk.reroll_version < ? AND w.state != ?"
+    )
+    return sql, [version, int(WheelState.DELETED)]
+
+
+def _preview_reroll_version_below(
+    conn: sqlite3.Connection, version: str, *, read_budget: float
+) -> SelectorPreview:
+    wheel_sql, wheel_params = _reroll_version_wheel_count_query(version)
+    skips_row_sql, skips_row_params = _reroll_version_skips_row_count_query(version)
+    with read_txn(conn, budget=read_budget, label="dispatcher.preview_selector"):
+        (wheel_count,) = conn.execute(wheel_sql, wheel_params).fetchone()
+        (skips_row_count,) = conn.execute(skips_row_sql, skips_row_params).fetchone()
+    return SelectorPreview(
+        wheel_count=wheel_count,
+        skips_to_clear_count=skips_row_count,
+    )
+
+
+def _run_count(conn: sqlite3.Connection, sql: str, params: list[Any], *, budget: float) -> int:
+    with read_txn(conn, budget=budget, label="dispatcher.preview_selector"):
+        (count,) = conn.execute(sql, params).fetchone()
+    return count
 
 
 def _reprocess_chunk_op(

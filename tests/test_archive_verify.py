@@ -122,6 +122,43 @@ def test_missing_zst_file_for_a_sealed_segment_is_reported(tmp_path, conn):
     assert f"{segment_id:06d}" in report.problems[0]
 
 
+def test_segment_id_restricts_verification_to_one_segment(tmp_path, conn):
+    store = ArchiveStore(tmp_path / "segments", conn)
+    store.add(b"one")
+    store.seal_writer(store.current_writer())
+    first_segment_id = store.sealed_segment_ids()[0]
+    store.add(b"two")
+    store.seal_writer(store.current_writer())
+    second_segment_id = store.sealed_segment_ids()[-1]
+    assert first_segment_id != second_segment_id
+    conn.execute("DELETE FROM blobs")  # every segment now has footer/blobs discrepancies
+    conn.commit()
+
+    report = verify_archive(store, segment_id=first_segment_id)
+
+    assert not report.ok
+    assert all(f"{first_segment_id:06d}" in p for p in report.problems)
+    assert not any(f"{second_segment_id:06d}" in p for p in report.problems)
+
+
+def test_segment_id_for_a_segment_that_does_not_exist_is_reported_not_raised(tmp_path, conn):
+    store = _sealed_store(tmp_path, conn)
+
+    report = verify_archive(store, segment_id=999)
+
+    assert not report.ok
+    assert len(report.problems) == 1
+    assert "999" in report.problems[0]
+
+
+def test_segment_id_none_verifies_every_sealed_segment(tmp_path, conn):
+    store = _sealed_store(tmp_path, conn)
+
+    report = verify_archive(store, segment_id=None)
+
+    assert report.ok
+
+
 def test_corrupt_trailer_on_a_sealed_segment_is_reported_not_raised(tmp_path, conn):
     store = _sealed_store(tmp_path, conn)
     segment_id = store.sealed_segment_ids()[0]

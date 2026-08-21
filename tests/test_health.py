@@ -761,6 +761,87 @@ def test_dependency_health_reflects_breaker_state(reader, writer):
 
 
 # ---------------------------------------------------------------------------
+# Degraded snapshot without a live daemon (CLI ``status`` use case)
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_without_writer_uses_reader_for_wal_bytes_and_freelist(db_path, reader):
+    health = snapshot(reader)
+    direct = sqlite3.connect(db_path)
+    try:
+        (expected_freelist,) = direct.execute("PRAGMA freelist_count").fetchone()
+    finally:
+        direct.close()
+    assert health.freelist_count == expected_freelist
+    assert health.wal_bytes == 0  # no WAL file yet on a freshly-init'd db
+
+
+def test_snapshot_without_writer_reports_a_real_wal_file_size(db_path, reader):
+    from pathlib import Path
+
+    direct = sqlite3.connect(db_path, check_same_thread=False)
+    blocking_reader = sqlite3.connect(db_path, check_same_thread=False)
+    try:
+        direct.execute("PRAGMA journal_mode = WAL")
+        # A second, long-running read transaction blocks sqlite's automatic
+        # post-commit checkpoint, so the WAL file the write below produces
+        # is still on disk (not truncated away) when `snapshot()` reads it.
+        blocking_reader.execute("BEGIN")
+        blocking_reader.execute("SELECT COUNT(*) FROM pypi_index").fetchone()
+        direct.execute(
+            "INSERT INTO pypi_index (name, serial, updated_at) VALUES "
+            "('proj', 1, '2024-01-01T00:00:00+00:00')"
+        )
+        direct.commit()
+        health = snapshot(reader)
+        assert health.wal_bytes == Path(f"{db_path}-wal").stat().st_size
+        assert health.wal_bytes > 0
+    finally:
+        blocking_reader.rollback()
+        blocking_reader.close()
+        direct.close()
+
+
+def test_snapshot_without_writer_defaults_checkpoint_and_queue_fields(reader):
+    health = snapshot(reader)
+    assert health.seconds_since_truncate_checkpoint is None
+    assert health.consecutive_checkpoint_failures == 0
+    assert health.writer_queue_depth == 0
+    assert health.writer_failed_ops == 0
+
+
+def test_snapshot_without_limiter_defaults_to_zero_available_and_no_children(reader):
+    health = snapshot(reader)
+    assert health.limiter_global_available == 0.0
+    assert health.limiter_children == {}
+
+
+def test_snapshot_without_breakers_has_empty_dependencies(reader):
+    health = snapshot(reader)
+    assert health.dependencies == {}
+
+
+def test_snapshot_without_stages_has_empty_queues_and_stages_and_zero_index_lag(reader):
+    health = snapshot(reader)
+    assert health.queues == {}
+    assert health.stages == {}
+    assert health.index_lag == 0
+    assert health.remote_last_serial is None
+    assert health.last_index_poll_at is None
+    assert health.last_index_change_at is None
+
+
+def test_snapshot_without_a_writer_or_limiter_or_breakers_or_stages_does_not_crash(db_path, reader):
+    """The exact calling convention a one-shot CLI process (no live daemon
+    in-process state) uses: only a read-only connection.
+    """
+    health = snapshot(reader)
+    assert isinstance(health.snapshot_at, float)
+    assert health.projects_indexed == 0
+    assert health.state_counts["READY"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
@@ -808,6 +889,16 @@ def test_db_bytes_is_zero_for_an_in_memory_database():
     conn = sqlite3.connect(":memory:")
     try:
         assert _db_file_size(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_wal_bytes_is_zero_for_an_in_memory_database_without_a_writer():
+    from reroll_sync.health import _wal_bytes
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert _wal_bytes(conn, None) == 0
     finally:
         conn.close()
 

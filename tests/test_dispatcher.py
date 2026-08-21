@@ -30,6 +30,7 @@ from reroll_sync.dispatcher import (
     compress_json,
     compute_backoff,
     decompress_json,
+    preview_selector,
 )
 from reroll_sync.schema import WheelState
 from reroll_sync.writer import Writer
@@ -1487,3 +1488,196 @@ def test_dispatcher_module_never_calls_commit_rollback_or_begin():
         r"\.commit\s*\(|\.rollback\s*\(|execute\s*\(\s*[\"']\s*BEGIN", re.IGNORECASE
     )
     assert not pattern.search(text)
+
+
+# ---------------------------------------------------------------------------
+# preview_selector: a read-only count of what reprocess() would do
+# ---------------------------------------------------------------------------
+
+
+def test_preview_project_selector_counts_without_writing(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    wheel_id = _insert_wheel(conn, filename="preview-proj-1.0-py3-none-any.whl", project="prevproj")
+    conn.close()
+
+    preview = preview_selector(reader, ProjectSelector(project="prevproj"))
+
+    assert preview.wheel_count == 1
+    assert preview.skips_to_clear_count == 0
+    row = reader.execute("SELECT state FROM wheels WHERE id = ?", (wheel_id,)).fetchone()
+    assert row[0] == int(WheelState.NEED_CONVERT)  # unchanged: nothing written
+
+
+def test_preview_project_selector_excludes_deleted(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    _insert_wheel(
+        conn,
+        filename="preview-del-1.0-py3-none-any.whl",
+        project="delproj",
+        state=WheelState.DELETED,
+    )
+    conn.close()
+
+    preview = preview_selector(reader, ProjectSelector(project="delproj"))
+
+    assert preview.wheel_count == 0
+
+
+def test_preview_state_selector_counts_matching_wheels(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    for i in range(3):
+        _insert_wheel(
+            conn,
+            filename=f"preview-quar-{i}-1.0-py3-none-any.whl",
+            state=WheelState.QUARANTINED,
+        )
+    conn.close()
+
+    preview = preview_selector(reader, StateSelector(state=WheelState.QUARANTINED))
+
+    assert preview.wheel_count == 3
+    assert preview.skips_to_clear_count == 0
+
+
+def test_preview_state_selector_targeting_deleted_is_zero(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    _insert_wheel(conn, filename="preview-tomb-1.0-py3-none-any.whl", state=WheelState.DELETED)
+    conn.close()
+
+    preview = preview_selector(reader, StateSelector(state=WheelState.DELETED))
+
+    assert preview.wheel_count == 0
+
+
+def test_preview_skipped_only_counts_skipped_wheels(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    _insert_wheel(conn, filename="preview-skip-1.0-py3-none-any.whl", state=WheelState.SKIPPED)
+    conn.close()
+
+    preview = preview_selector(reader, SkippedOnly())
+
+    assert preview.wheel_count == 1
+    assert preview.skips_to_clear_count == 0
+
+
+def test_preview_reroll_version_below_counts_repodata_wheels(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    wheel_id = _insert_wheel(
+        conn, filename="preview-rv-1.0-py3-none-any.whl", state=WheelState.READY
+    )
+    conn.execute(
+        "INSERT INTO wheel_repodata (wheel_id, repodata_zst, reroll_version) VALUES (?, ?, ?)",
+        (wheel_id, b"blob", "1.0.0"),
+    )
+    conn.commit()
+    conn.close()
+
+    preview = preview_selector(reader, RerollVersionBelow(version="2.0.0"))
+
+    assert preview.wheel_count == 1
+    assert preview.skips_to_clear_count == 0
+
+
+def test_preview_reroll_version_below_counts_skips_to_clear(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    wheel_id = _insert_wheel(
+        conn, filename="preview-rvskip-1.0-py3-none-any.whl", state=WheelState.SKIPPED
+    )
+    conn.execute(
+        "INSERT INTO skips (wheel_id, stage, reason, permanent, reroll_version, created_at) "
+        "VALUES (?, 'convert', 'r', 0, '1.0.0', '2024-01-01T00:00:00+00:00')",
+        (wheel_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    preview = preview_selector(reader, RerollVersionBelow(version="2.0.0"))
+
+    assert preview.wheel_count == 1
+    assert preview.skips_to_clear_count == 1
+
+
+def test_preview_reroll_version_below_excludes_permanent_skips(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    wheel_id = _insert_wheel(
+        conn, filename="preview-rvperm-1.0-py3-none-any.whl", state=WheelState.SKIPPED
+    )
+    conn.execute(
+        "INSERT INTO skips (wheel_id, stage, reason, permanent, reroll_version, created_at) "
+        "VALUES (?, 'convert', 'r', 1, NULL, '2024-01-01T00:00:00+00:00')",
+        (wheel_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    preview = preview_selector(reader, RerollVersionBelow(version="2.0.0"))
+
+    assert preview.wheel_count == 0
+    assert preview.skips_to_clear_count == 0
+
+
+def test_preview_reroll_version_below_matches_reprocess_wheel_count(db_path, reader, writer):
+    conn = sqlite3.connect(db_path)
+    for i in range(2):
+        wheel_id = _insert_wheel(
+            conn,
+            filename=f"preview-match-{i}-1.0-py3-none-any.whl",
+            state=WheelState.SKIPPED,
+        )
+        conn.execute(
+            "INSERT INTO skips (wheel_id, stage, reason, permanent, reroll_version, created_at) "
+            "VALUES (?, 'convert', 'r', 0, '1.0.0', '2024-01-01T00:00:00+00:00')",
+            (wheel_id,),
+        )
+    conn.commit()
+    conn.close()
+    dispatcher = _dispatcher(reader, writer)
+
+    preview = preview_selector(reader, RerollVersionBelow(version="2.0.0"))
+    affected = dispatcher.reprocess(RerollVersionBelow(version="2.0.0"))
+
+    assert preview.wheel_count == affected == 2
+
+
+def test_preview_reroll_version_below_dedupes_wheel_with_both_repodata_and_stale_skip(
+    db_path, reader, writer
+):
+    """A wheel can have BOTH a matching `wheel_repodata` row and a leftover,
+    stale `skips` row below the target version (the `skips` row survives a
+    later success -- `_ok_op` never deletes it, per fsck.py's invariant 10).
+    `_reprocess_chunk_op` clears both for the same wheel_id in one `_apply`
+    call, so the real campaign touches this wheel exactly once; the preview
+    must match, not double-count it.
+    """
+    conn = sqlite3.connect(db_path)
+    wheel_id = _insert_wheel(
+        conn, filename="preview-dedupe-1.0-py3-none-any.whl", state=WheelState.READY
+    )
+    conn.execute(
+        "INSERT INTO wheel_repodata (wheel_id, repodata_zst, reroll_version) VALUES (?, ?, ?)",
+        (wheel_id, b"blob", "1.1.0"),
+    )
+    conn.execute(
+        "INSERT INTO skips (wheel_id, stage, reason, permanent, reroll_version, created_at) "
+        "VALUES (?, 'convert', 'r', 0, '1.0.0', '2024-01-01T00:00:00+00:00')",
+        (wheel_id,),
+    )
+    conn.commit()
+    conn.close()
+    dispatcher = _dispatcher(reader, writer)
+
+    preview = preview_selector(reader, RerollVersionBelow(version="2.0.0"))
+    affected = dispatcher.reprocess(RerollVersionBelow(version="2.0.0"))
+
+    assert preview.wheel_count == 1
+    assert affected == 1
+    assert preview.wheel_count == affected
+
+
+def test_preview_raises_on_unsupported_selector():
+    from typing import cast
+
+    from reroll_sync.dispatcher import Selector
+
+    with pytest.raises(TypeError):
+        preview_selector(cast(sqlite3.Connection, None), cast(Selector, object()))

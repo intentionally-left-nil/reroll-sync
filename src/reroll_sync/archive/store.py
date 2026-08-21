@@ -38,6 +38,12 @@ class ArchiveStore:
     (one whose ``segments`` row has no ``sealed_at``, including a row
     that's missing entirely) is truncated: the footer is written last, so
     a partial segment has no usable index, and it is never salvaged.
+
+    Pass ``recover=False`` for a second, read-only instance opened against
+    a directory a live writer (e.g. the daemon) may already own -- an
+    in-progress segment looks identical to a crashed writer's leftover
+    from the outside (both have ``sealed_at IS NULL``), so recovery must
+    never run against a directory this instance doesn't exclusively own.
     """
 
     def __init__(
@@ -47,6 +53,7 @@ class ArchiveStore:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], str] = _default_wall_clock,
+        recover: bool = True,
     ):
         self._directory = Path(directory)
         self._directory.mkdir(parents=True, exist_ok=True)
@@ -55,7 +62,8 @@ class ArchiveStore:
         self._wall_clock = wall_clock
         self.reader = SegmentReader(self._directory)
         self._current_writer: SegmentWriter | None = None
-        self._recover_stale_open_segments()
+        if recover:
+            self._recover_stale_open_segments()
 
     def location_for(self, sha256: str) -> BlobLocation | None:
         """Look up where ``sha256`` lives, or ``None`` if it isn't stored."""

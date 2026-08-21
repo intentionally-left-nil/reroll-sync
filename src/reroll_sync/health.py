@@ -164,10 +164,10 @@ class Health:
 
 def snapshot(
     reader: sqlite3.Connection,
-    writer: Writer,
-    limiter: HierarchicalLimiter,
-    breakers: Mapping[str, CircuitBreaker],
-    stages: Mapping[str, StageInput],
+    writer: Writer | None = None,
+    limiter: HierarchicalLimiter | None = None,
+    breakers: Mapping[str, CircuitBreaker] | None = None,
+    stages: Mapping[str, StageInput] | None = None,
     *,
     archive_store: ArchiveStore | None = None,
     watchdog: ReadTxnWatchdog | None = None,
@@ -183,8 +183,25 @@ def snapshot(
     ``watchdog``, ``longest_read_txn_ms``/``read_txn_budget_violations``
     report ``0.0``/``0`` rather than reflecting real system-wide
     ``read_txn`` activity outside this function's own calls.
+
+    ``writer``/``limiter``/``breakers``/``stages`` are also optional, for a
+    one-shot process (e.g. the CLI's ``status`` command) that has only a
+    read-only connection and none of the live daemon's in-process state.
+    Without ``writer``, ``wal_bytes``/``freelist_count`` are computed
+    directly from ``reader`` instead, and
+    ``seconds_since_truncate_checkpoint``/``consecutive_checkpoint_failures``/
+    ``writer_queue_depth``/``writer_failed_ops`` (counters that exist only
+    in a live writer's memory) report ``None``/``0``/``0``/``0``. Without
+    ``limiter``, rate-limiting fields report ``0.0``/no children. Without
+    ``breakers``, ``dependencies`` is empty. Without ``stages``, every
+    stage/queue/freshness field derived from it (``queues``, ``stages``,
+    ``index_lag``, ``remote_last_serial``, ``last_index_poll_at``,
+    ``last_index_change_at``) reports empty/zero/``None`` rather than
+    crashing -- there is nothing to compare the database against without a
+    live index-poll stage.
     """
     now_value = now()
+    stages = stages if stages is not None else {}
 
     freshness = _read_freshness(reader, now_value=now_value, budget=read_budget, watchdog=watchdog)
     census = _read_census(reader, budget=read_budget, watchdog=watchdog)
@@ -204,8 +221,9 @@ def snapshot(
         0 if remote_last_serial is None else max(0, remote_last_serial - freshness.local_max_serial)
     )
 
-    checkpoint_at = writer.last_truncate_checkpoint_at()
+    checkpoint_at = None if writer is None else writer.last_truncate_checkpoint_at()
     watchdog_snapshot = watchdog.snapshot() if watchdog is not None else None
+    limiter_snapshot = limiter.snapshot() if limiter is not None else None
 
     return Health(
         snapshot_at=now_value,
@@ -227,19 +245,21 @@ def snapshot(
         quarantined_count=census.state_counts.get(WheelState.QUARANTINED.name, 0),
         skipped_count=census.state_counts.get(WheelState.SKIPPED.name, 0),
         requires_prerelease_count=census.requires_prerelease_count,
-        wal_bytes=writer.wal_bytes(),
+        wal_bytes=_wal_bytes(reader, writer),
         seconds_since_truncate_checkpoint=(
             None if checkpoint_at is None else now_value - checkpoint_at
         ),
-        consecutive_checkpoint_failures=writer.consecutive_checkpoint_failures(),
+        consecutive_checkpoint_failures=(
+            0 if writer is None else writer.consecutive_checkpoint_failures()
+        ),
         longest_read_txn_ms=0.0 if watchdog_snapshot is None else watchdog_snapshot.longest_ms,
         read_txn_budget_violations=(
             0 if watchdog_snapshot is None else watchdog_snapshot.over_budget_count
         ),
         db_bytes=_db_file_size(reader),
-        freelist_count=writer.freelist_count(),
-        writer_queue_depth=writer.queue_depth(),
-        writer_failed_ops=writer.failed_ops(),
+        freelist_count=_freelist_count(reader, writer),
+        writer_queue_depth=0 if writer is None else writer.queue_depth(),
+        writer_failed_ops=0 if writer is None else writer.failed_ops(),
         segments_sealed=archive.segments_sealed,
         segments_open=archive.segments_open,
         open_segment_age_seconds=archive.open_segment_age_seconds,
@@ -247,10 +267,14 @@ def snapshot(
         unsealed_records=archive.unsealed_records,
         archive_bytes=archive.archive_bytes,
         disk_free_bytes=archive.disk_free_bytes,
-        limiter_global_available=limiter.snapshot().global_available,
-        limiter_children=limiter.snapshot().children,
+        limiter_global_available=(
+            0.0 if limiter_snapshot is None else limiter_snapshot.global_available
+        ),
+        limiter_children={} if limiter_snapshot is None else limiter_snapshot.children,
         stages={name: _stage_health(stage_input) for name, stage_input in stages.items()},
-        dependencies={name: _dependency_health(breaker) for name, breaker in breakers.items()},
+        dependencies={
+            name: _dependency_health(breaker) for name, breaker in (breakers or {}).items()
+        },
         error_counts_1h=errors.counts_1h,
         error_counts_24h=errors.counts_24h,
     )
@@ -680,6 +704,24 @@ def _dependency_health(breaker: CircuitBreaker) -> DependencyHealth:
         consecutive_failures=breaker.consecutive_failures(),
         next_trial_at=breaker.next_trial_at(),
     )
+
+
+def _wal_bytes(reader: sqlite3.Connection, writer: Writer | None) -> int:
+    if writer is not None:
+        return writer.wal_bytes()
+    for _seq, name, filename in reader.execute("PRAGMA database_list").fetchall():
+        if name == "main" and filename:
+            wal_path = Path(f"{filename}-wal")
+            if wal_path.exists():
+                return wal_path.stat().st_size
+    return 0
+
+
+def _freelist_count(reader: sqlite3.Connection, writer: Writer | None) -> int:
+    if writer is not None:
+        return writer.freelist_count()
+    (value,) = reader.execute("PRAGMA freelist_count").fetchone()
+    return value
 
 
 def _db_file_size(reader: sqlite3.Connection) -> int:

@@ -8,7 +8,6 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "boto3>=1.43.75",
     "frozendict>=2.4.7",
     "httpx[http2]>=0.28.1",
     "msgpack>=1.2.1",

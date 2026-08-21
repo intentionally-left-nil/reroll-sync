@@ -27,11 +27,18 @@ class VerifyReport:
         return not self.problems
 
 
-def verify_archive(store: ArchiveStore) -> VerifyReport:
-    """Check every sealed segment's footer against disk and the ``blobs`` table."""
+def verify_archive(store: ArchiveStore, *, segment_id: int | None = None) -> VerifyReport:
+    """Check sealed segment(s)' footer(s) against disk and the ``blobs`` table.
+
+    Checks every sealed segment by default. Pass ``segment_id`` to check
+    only that one -- a segment id that isn't actually sealed (missing, or
+    still open) is reported as a problem rather than raised, same as any
+    other corrupt/missing segment.
+    """
     problems: list[str] = []
-    for segment_id in store.sealed_segment_ids():
-        problems.extend(_verify_segment(store, segment_id))
+    segment_ids = store.sealed_segment_ids() if segment_id is None else [segment_id]
+    for one_id in segment_ids:
+        problems.extend(_verify_segment(store, one_id))
     return VerifyReport(tuple(problems))
 
 
