@@ -22,7 +22,6 @@ from typing import NoReturn
 
 from .db import SchemaMismatchError, connect, init_db
 from .r2_client import R2Config, R2ConfigError, r2_config_from_env
-from .stats import compute_stats
 
 DEFAULT_DB_PATH = "reroll_sync.db"
 
@@ -44,6 +43,19 @@ def _sync_reroll(
     limit: int | None = None,
 ) -> NoReturn:
     raise NotImplementedError("sync-reroll is not yet implemented")
+
+
+def _compute_stats(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Return (projects_indexed, wheels_synced) row counts.
+
+    A minimal, self-contained replacement for the now-deleted ``stats.py``
+    (its two counts survive as fields of ``health.snapshot()``); kept here
+    only so the ``stats`` command's import chain doesn't break, pending
+    this module's full rewrite in spec 12.
+    """
+    (projects_indexed,) = conn.execute("SELECT COUNT(*) FROM pypi_index").fetchone()
+    (wheels_synced,) = conn.execute("SELECT COUNT(*) FROM wheels").fetchone()
+    return projects_indexed, wheels_synced
 
 
 def _sync_index(
@@ -215,12 +227,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "stats":
         conn = connect(args.db_path)
         try:
-            result = compute_stats(conn)
+            projects_indexed, wheels_synced = _compute_stats(conn)
         finally:
             conn.close()
-        print(
-            f"{result.projects_indexed} project(s) indexed, {result.wheels_synced} wheel(s) synced"
-        )
+        print(f"{projects_indexed} project(s) indexed, {wheels_synced} wheel(s) synced")
         return 0
 
     if args.command == "sync-metadata":

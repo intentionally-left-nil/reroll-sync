@@ -190,6 +190,38 @@ def test_exempt_exception_during_half_open_trial_does_not_reopen():
     assert breaker.allow() is True
 
 
+def test_consecutive_failures_reports_the_current_streak():
+    breaker, _ = _breaker(failure_threshold=5)
+    assert breaker.consecutive_failures() == 0
+    breaker.record_failure()
+    breaker.record_failure()
+    assert breaker.consecutive_failures() == 2
+    breaker.record_success()
+    assert breaker.consecutive_failures() == 0
+
+
+def test_next_trial_at_is_none_while_closed():
+    breaker, _ = _breaker()
+    assert breaker.next_trial_at() is None
+
+
+def test_next_trial_at_is_opened_at_plus_recovery_timeout_while_open():
+    breaker, clock = _breaker(recovery_timeout=60.0)
+    for _ in range(5):
+        breaker.record_failure()
+    assert breaker.next_trial_at() == clock.now() + 60.0
+
+
+def test_next_trial_at_is_none_once_closed_again():
+    breaker, clock = _breaker(recovery_timeout=60.0)
+    for _ in range(5):
+        breaker.record_failure()
+    clock.advance(60.0)
+    assert breaker.allow() is True
+    breaker.record_success()
+    assert breaker.next_trial_at() is None
+
+
 def test_call_raises_circuit_breaker_open_error_without_invoking_fn():
     breaker, _ = _breaker(failure_threshold=1)
     with pytest.raises(_Boom):

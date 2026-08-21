@@ -418,6 +418,18 @@ def test_writer_failed_ops_increments_by_exactly_one(db_path, writers):
         writer.stop(drain=False)
 
 
+def test_queue_depth_reflects_items_not_yet_pulled_by_the_writer_thread(memory_conn):
+    # The writer's own thread is never started, so nothing drains the
+    # queue: `submit` is safe to call before `start()`, and this is the
+    # only way to observe the queue's raw depth without a race against
+    # the background thread pulling items out of it.
+    writer = Writer(memory_conn, batch_size=1000, batch_interval=1_000_000.0)
+    assert writer.queue_depth() == 0
+    writer.submit(WriteOp(name="noop-1", apply=lambda _conn: None))
+    writer.submit(WriteOp(name="noop-2", apply=lambda _conn: None))
+    assert writer.queue_depth() == 2
+
+
 def test_failed_op_logs_at_error_with_name(db_path, writers, caplog):
     conn = _writer_conn(db_path)
     clock = AutoAdvanceClock(step=0.01)
@@ -815,7 +827,7 @@ def test_submit_and_wait_racing_stop_does_not_lose_the_op_or_hang(db_path, write
     def _do_submit():
         try:
             submit_result["value"] = writer.submit_and_wait(op)
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:
             submit_result["error"] = exc
 
     submit_thread = threading.Thread(target=_do_submit)
@@ -862,7 +874,7 @@ def test_submit_racing_stop_does_not_silently_lose_the_op(db_path, writers, monk
     def _do_submit():
         try:
             writer.submit(op)
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:
             submit_error["error"] = exc
 
     submit_thread = threading.Thread(target=_do_submit)
@@ -948,7 +960,7 @@ def test_fatal_commit_failure_resolves_other_queued_ops_in_the_same_batch(db_pat
     def _wait_for(name, op):
         try:
             writer.submit_and_wait(op)
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:
             results[name] = exc
 
     op_a = WriteOp(name="a", apply=lambda _conn: "a", result_event=threading.Event())

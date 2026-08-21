@@ -154,7 +154,65 @@ def test_transient_error_records_a_breaker_failure(reader):
     assert breaker.state() == CircuitState.OPEN
 
 
+def test_snapshot_before_any_poll_is_all_none(reader):
+    stage = IndexPollStage(
+        _client(_status_handler(304)), reader, _breaker(), enqueue=lambda n: None
+    )
+    snapshot = stage.snapshot()
+    assert snapshot.last_remote_serial is None
+    assert snapshot.last_poll_at is None
+    assert snapshot.last_change_at is None
+
+
+def test_snapshot_records_remote_serial_and_poll_time_on_a_successful_poll(reader):
+    clock = {"t": 100.0}
+    client = _client(_json_handler(_index_payload(["numpy"])))
+    stage = IndexPollStage(
+        client, reader, _breaker(), enqueue=lambda n: None, now=lambda: clock["t"]
+    )
+
+    stage.iterate()
+
+    snapshot = stage.snapshot()
+    assert snapshot.last_remote_serial == 1
+    assert snapshot.last_poll_at == 100.0
+    assert snapshot.last_change_at == 100.0
+
+
+def test_snapshot_last_change_at_does_not_advance_when_nothing_is_stale(reader):
+    clock = {"t": 100.0}
+    client = _client(_json_handler(_index_payload(["numpy"])))
+    stage = IndexPollStage(
+        client, reader, _breaker(), enqueue=lambda n: None, now=lambda: clock["t"]
+    )
+    stage.iterate()
+    assert stage.snapshot().last_change_at == 100.0
+
+    clock["t"] = 200.0
+    empty_client = _client(_json_handler(_index_payload([])))
+    stage._client = empty_client
+    stage.iterate()
+
+    snapshot = stage.snapshot()
+    assert snapshot.last_poll_at == 200.0
+    assert snapshot.last_change_at == 100.0  # unchanged: this poll found nothing stale
+
+
+def test_snapshot_last_poll_at_advances_even_on_not_modified(reader):
+    clock = {"t": 100.0}
+    client = _client(_status_handler(304))
+    stage = IndexPollStage(
+        client, reader, _breaker(), enqueue=lambda n: None, now=lambda: clock["t"]
+    )
+
+    stage.iterate()
+
+    assert stage.snapshot().last_poll_at == 100.0
+    assert stage.snapshot().last_remote_serial is None
+
+
 def test_rate_limited_does_not_record_a_breaker_failure(reader):
+
     client = _client(_status_handler(429))
     breaker = _breaker()
     stage = IndexPollStage(client, reader, breaker, enqueue=lambda name: None)

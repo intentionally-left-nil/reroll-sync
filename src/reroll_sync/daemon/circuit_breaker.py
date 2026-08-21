@@ -57,6 +57,21 @@ class CircuitBreaker:
         with self._lock:
             return self._state
 
+    def consecutive_failures(self) -> int:
+        """Return the current streak of consecutive failures since the last success."""
+        with self._lock:
+            return self._consecutive_failures
+
+    def next_trial_at(self) -> float | None:
+        """Return when (per the injected clock) the next half-open trial becomes due.
+
+        ``None`` unless the breaker is currently ``OPEN``.
+        """
+        with self._lock:
+            if self._state != CircuitState.OPEN or self._opened_at is None:
+                return None
+            return self._opened_at + self._recovery_timeout
+
     def allow(self) -> bool:
         """Return whether a call may proceed now.
 

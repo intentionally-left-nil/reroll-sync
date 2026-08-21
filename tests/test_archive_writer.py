@@ -234,6 +234,29 @@ def test_should_seal_true_once_six_hours_elapse_under_byte_threshold(tmp_path):
         assert writer.should_seal() is True
 
 
+def test_compressed_bytes_is_zero_before_any_block_flushes(tmp_path):
+    with SegmentWriter(tmp_path, 1, block_target_bytes=1_000_000, now=lambda: 0.0) as writer:
+        writer.add(b"tiny")
+        assert writer.compressed_bytes() == 0
+
+
+def test_compressed_bytes_reflects_flushed_block_size(tmp_path):
+    with SegmentWriter(
+        tmp_path, 1, block_target_bytes=10, seal_bytes=1_000_000, now=lambda: 0.0
+    ) as writer:
+        writer.add(b"0123456789")
+        writer.add(b"next-block-trigger")  # forces the first block to flush
+        assert writer.compressed_bytes() > 0
+
+
+def test_age_seconds_reflects_elapsed_time_since_construction(tmp_path):
+    now, advance = _mutable_clock()
+    with SegmentWriter(tmp_path, 1, now=now) as writer:
+        assert writer.age_seconds() == 0.0
+        advance(42.0)
+        assert writer.age_seconds() == 42.0
+
+
 def test_seal_renames_open_to_zst_and_open_no_longer_exists(tmp_path):
     writer = SegmentWriter(tmp_path, 1, now=lambda: 0.0)
     writer.add(b"data")

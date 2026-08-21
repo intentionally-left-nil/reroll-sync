@@ -153,6 +153,10 @@ class Writer:
         with self._seq_lock:
             return self._change_seq
 
+    def queue_depth(self) -> int:
+        """Return the number of ops submitted but not yet pulled off the queue."""
+        return self._queue.qsize()
+
     def failed_ops(self) -> int:
         """Return the count of ops whose ``apply`` raised, across the writer's lifetime."""
         return self._failed_ops

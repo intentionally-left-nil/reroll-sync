@@ -1052,3 +1052,76 @@ def test_unknown_stage_name_is_reported_as_an_error(work_dir, socket_dir, daemon
 
     assert response["ok"] is False
     assert "nope" in response["error"]
+
+
+# ---------------------------------------------------------------------------
+# /metrics HTTP endpoint (spec 11)
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_server_is_not_started_when_metrics_port_is_unset(
+    work_dir, socket_dir, daemon_factory
+):
+    daemon = daemon_factory(_config(work_dir, socket_dir))
+    daemon.start()
+    assert daemon.metrics_server is None
+
+
+def test_metrics_endpoint_serves_prometheus_text(work_dir, socket_dir, daemon_factory):
+    import http.client
+
+    daemon = daemon_factory(_config(work_dir, socket_dir, metrics_port=0))
+    daemon.start()
+    assert daemon.metrics_server is not None
+
+    conn = http.client.HTTPConnection("127.0.0.1", daemon.metrics_server.port(), timeout=5)
+    try:
+        conn.request("GET", "/metrics")
+        response = conn.getresponse()
+        body = response.read().decode("utf-8")
+    finally:
+        conn.close()
+
+    assert response.status == 200
+    assert "reroll_sync_wal_bytes" in body
+    assert "reroll_sync_index_lag" in body
+
+
+def test_metrics_endpoint_reflects_dispatcher_and_writer_state(
+    work_dir, socket_dir, daemon_factory
+):
+    import http.client
+
+    daemon = daemon_factory(_config(work_dir, socket_dir, metrics_port=0))
+    daemon.start()
+    _insert_wheel(
+        daemon.config.db_path, filename="widget-1.0-py3-none-any.whl", state=WheelState.QUARANTINED
+    )
+
+    conn = http.client.HTTPConnection("127.0.0.1", daemon.metrics_server.port(), timeout=5)
+    try:
+        conn.request("GET", "/metrics")
+        response = conn.getresponse()
+        body = response.read().decode("utf-8")
+    finally:
+        conn.close()
+
+    assert 'reroll_sync_state_counts{state="QUARANTINED"} 1' in body
+
+
+def test_shutdown_stops_the_metrics_server(work_dir, socket_dir, daemon_factory):
+    import http.client
+
+    daemon = daemon_factory(_config(work_dir, socket_dir, metrics_port=0))
+    daemon.start()
+    port = daemon.metrics_server.port()
+
+    daemon.shutdown()
+
+    def _get() -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+        conn.request("GET", "/metrics")
+        conn.getresponse()
+
+    with pytest.raises(ConnectionRefusedError):
+        _get()

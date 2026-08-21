@@ -55,6 +55,51 @@ def test_location_for_matches_what_add_returned(tmp_path, conn):
     assert store.location_for(location.sha256) == location
 
 
+# --- read-only introspection: open_writer_if_any / disk_free_bytes -------
+
+
+def test_open_writer_if_any_is_none_before_any_write(tmp_path, conn):
+    store = ArchiveStore(tmp_path / "segments", conn)
+    assert store.open_writer_if_any() is None
+
+
+def test_open_writer_if_any_does_not_allocate_a_segment(tmp_path, conn):
+    store = ArchiveStore(tmp_path / "segments", conn)
+    store.open_writer_if_any()
+    assert store.sealed_segment_ids() == []
+    assert not (tmp_path / "segments").exists() or list((tmp_path / "segments").iterdir()) == []
+
+
+def test_open_writer_if_any_returns_the_current_writer_once_one_exists(tmp_path, conn):
+    store = ArchiveStore(tmp_path / "segments", conn)
+    writer = store.current_writer()
+    assert store.open_writer_if_any() is writer
+    _abandon(writer)
+
+
+def test_open_writer_if_any_is_none_again_after_sealing(tmp_path, conn):
+    store = ArchiveStore(tmp_path / "segments", conn)
+    store.add(b"metadata bytes")
+    store.seal_writer(store.current_writer())
+    assert store.open_writer_if_any() is None
+
+
+def test_disk_free_bytes_matches_shutil_disk_usage(tmp_path, conn):
+    import shutil
+
+    store = ArchiveStore(tmp_path / "segments", conn)
+    expected = shutil.disk_usage(tmp_path / "segments").free
+    assert store.disk_free_bytes() == expected
+
+
+def test_disk_free_bytes_returns_none_for_a_since_deleted_directory(tmp_path, conn):
+    import shutil
+
+    store = ArchiveStore(tmp_path / "segments", conn)
+    shutil.rmtree(tmp_path / "segments")
+    assert store.disk_free_bytes() is None
+
+
 # --- writer allocation ---------------------------------------------------
 
 

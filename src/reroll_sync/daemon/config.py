@@ -65,6 +65,8 @@ class Config:
     segment_seal_bytes: int = 64 * 1024 * 1024
     segment_seal_seconds: float = 21600.0
     disk_free_floor_bytes: int = 20 * 1024**3
+    metrics_port: int | None = None
+    """Localhost port to serve `/metrics` on. `None` (the default) disables it."""
 
     def __post_init__(self) -> None:
         _require_positive(self.global_rate, "global_rate")
@@ -87,6 +89,8 @@ class Config:
         _require_positive(self.vacuum_interval, "vacuum_interval")
         _require_positive(self.index_poll_interval, "index_poll_interval")
         _require_at_least(self.max_attempts, 1, "max_attempts")
+        if self.metrics_port is not None:
+            _require_non_negative(self.metrics_port, "metrics_port")
         _require_positive(self.backoff_base, "backoff_base")
         if self.backoff_cap < self.backoff_base:
             raise ConfigError(
@@ -139,6 +143,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> Config:
         segment_seal_bytes=_int(source, "SEGMENT_SEAL_BYTES", defaults.segment_seal_bytes),
         segment_seal_seconds=_float(source, "SEGMENT_SEAL_SECONDS", defaults.segment_seal_seconds),
         disk_free_floor_bytes=_int(source, "DISK_FREE_FLOOR_BYTES", defaults.disk_free_floor_bytes),
+        metrics_port=_optional_int(source, "METRICS_PORT", defaults.metrics_port),
     )
 
 
@@ -152,6 +157,11 @@ def _float(source: Mapping[str, str], suffix: str, default: float) -> float:
 
 
 def _int(source: Mapping[str, str], suffix: str, default: int) -> int:
+    raw = source.get(f"{_ENV_PREFIX}{suffix}")
+    return default if raw is None else int(raw)
+
+
+def _optional_int(source: Mapping[str, str], suffix: str, default: int | None) -> int | None:
     raw = source.get(f"{_ENV_PREFIX}{suffix}")
     return default if raw is None else int(raw)
 

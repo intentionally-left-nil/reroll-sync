@@ -42,6 +42,24 @@ def test_defaults_construct_a_valid_config():
     assert config.fetch_workers == 64
     assert config.project_workers == 32
     assert config.convert_workers >= 1
+    assert config.metrics_port is None
+
+
+def test_metrics_port_defaults_to_none_meaning_disabled():
+    assert _config().metrics_port is None
+
+
+def test_metrics_port_can_be_set():
+    assert _config(metrics_port=9110).metrics_port == 9110
+
+
+def test_metrics_port_zero_is_valid_meaning_os_assigned():
+    assert _config(metrics_port=0).metrics_port == 0
+
+
+def test_metrics_port_must_not_be_negative():
+    with pytest.raises(ConfigError):
+        _config(metrics_port=-1)
 
 
 def test_reserves_summing_above_global_rate_raises():
@@ -227,6 +245,7 @@ def test_config_from_env_overrides_scalar_fields():
             "REROLL_SYNC_SEGMENT_SEAL_BYTES": "100",
             "REROLL_SYNC_SEGMENT_SEAL_SECONDS": "5.0",
             "REROLL_SYNC_DISK_FREE_FLOOR_BYTES": "1000",
+            "REROLL_SYNC_METRICS_PORT": "9110",
         }
     )
     assert config.db_path == Path("/tmp/x.db")
@@ -248,6 +267,12 @@ def test_config_from_env_overrides_scalar_fields():
     assert config.segment_seal_bytes == 100
     assert config.segment_seal_seconds == 5.0
     assert config.disk_free_floor_bytes == 1000
+    assert config.metrics_port == 9110
+
+
+def test_config_from_env_metrics_port_defaults_to_none_when_unset():
+    config = config_from_env({"REROLL_SYNC_USER_AGENT": "ua"})
+    assert config.metrics_port is None
 
 
 def test_config_from_env_parses_domain_reserves_as_json():

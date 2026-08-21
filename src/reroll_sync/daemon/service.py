@@ -48,7 +48,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from .. import db
+from .. import db, health, metrics
 from ..archive.location import BlobLocation
 from ..archive.store import ArchiveStore
 from ..control import ControlHandlers, ControlServer
@@ -56,6 +56,7 @@ from ..convert import worker_init
 from ..dispatcher import Dispatcher, Selector, Stage
 from ..fetch import ArchiveHandoff, BulkConvertSource, ByteBudgetedQueue, recover_unsealed_segment
 from ..ingest import ProjectBackoff
+from ..metrics_server import MetricsServer
 from ..pypi_client import PyPIClient
 from ..ratelimit import HierarchicalLimiter
 from ..version import REROLL_VERSION
@@ -161,9 +162,11 @@ class Daemon:
         self.recovered_segment_ids: list[int] = []
         self.control_server: ControlServer | None = None
         self._project_sync_stage: ProjectSyncStage | None = None
+        self._index_poll_stage: IndexPollStage | None = None
         self._convert_stage: ConvertStage | None = None
         self._fetch_stage: FetchStage | None = None
         self._owned_conns: list[sqlite3.Connection] = []
+        self.metrics_server: MetricsServer | None = None
         self._on_archive_disk_pause: Callable[[], None] | None = None
         """Test-only hook: called every time the archive thread notices
         `disk_guard` is paused and is about to wait instead of popping the
@@ -225,6 +228,7 @@ class Daemon:
 
         self._start_control_server()
         self._start_stages()
+        self._start_metrics_server()
         self._started_event.set()
 
     def _recover_archive(self) -> None:
@@ -241,6 +245,54 @@ class Daemon:
         self.recovered_segment_ids = sorted(stale_before - sealed)
         for segment_id in self.recovered_segment_ids:
             recover_unsealed_segment(self.archive_store, self.writer, segment_id)
+
+    def _start_metrics_server(self) -> None:
+        """Start the localhost-only `/metrics` endpoint, if configured.
+
+        Disabled (no server, `self.metrics_server` stays `None`) unless
+        `Config.metrics_port` is set -- most callers (tests, offline
+        tools) have no use for a listening socket at all.
+        """
+        if self.config.metrics_port is None:
+            return
+        server = MetricsServer(self.config.metrics_port, self._render_metrics)
+        server.start()
+        self.metrics_server = server
+
+    def _stage_inputs(self) -> dict[str, health.StageInput]:
+        """Build `health.snapshot()`'s `stages` argument from live daemon state."""
+        queue_by_stage = {"fetch": Stage.FETCH, "convert": Stage.CONVERT}
+        inputs: dict[str, health.StageInput] = {}
+        for name, loop in self.stage_loops.items():
+            queue_metrics = None
+            if name in queue_by_stage:
+                queue_metrics = self.dispatcher.metrics(queue_by_stage[name])
+            remote_last_serial = None
+            last_change_at = None
+            if name == "index_poll" and self._index_poll_stage is not None:
+                poll_snapshot = self._index_poll_stage.snapshot()
+                remote_last_serial = poll_snapshot.last_remote_serial
+                last_change_at = poll_snapshot.last_change_at
+            inputs[name] = health.StageInput(
+                loop=loop.stats(),
+                queue=queue_metrics,
+                remote_last_serial=remote_last_serial,
+                last_change_at=last_change_at,
+            )
+        return inputs
+
+    def _render_metrics(self) -> str:
+        """Render a fresh `health.snapshot()` as Prometheus text. Called per scrape."""
+        snapshot = health.snapshot(
+            self.reader_conn,
+            self.writer,
+            self.limiter,
+            self.breakers,
+            self._stage_inputs(),
+            archive_store=self.archive_store,
+            now=self._now,
+        )
+        return metrics.render_metrics(snapshot)
 
     def _start_control_server(self) -> None:
         """Start the control socket before any stage, so `status` answers regardless."""
@@ -320,7 +372,9 @@ class Daemon:
             conn,
             self.breakers[PYPI_ORG],
             enqueue=self._project_sync_stage.enqueue,
+            now=self._now,
         )
+        self._index_poll_stage = stage
         return StageLoop(
             "index_poll",
             stage.iterate,
@@ -608,6 +662,8 @@ class Daemon:
 
         if self.control_server is not None:
             self.control_server.stop()
+        if self.metrics_server is not None:
+            self.metrics_server.stop()
         self.pypi_client.close()
         if hasattr(self, "fetch_pool"):
             self.fetch_pool.shutdown(wait=False)

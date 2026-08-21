@@ -13,6 +13,7 @@ deferred feature.
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
 import time
 from collections.abc import Callable
@@ -129,6 +130,28 @@ class ArchiveStore:
         if self._current_writer is writer:
             self._current_writer = None
         return stats
+
+    def open_writer_if_any(self) -> SegmentWriter | None:
+        """Return the currently open writer, or ``None`` if none is open.
+
+        Unlike :meth:`current_writer`, never allocates one -- safe to call
+        from a read-only context (e.g. a health check) that must not
+        create a new segment as a side effect of merely inspecting one.
+        """
+        return self._current_writer
+
+    def disk_free_bytes(self) -> int | None:
+        """Return free bytes on the filesystem backing this store's directory.
+
+        Returns `None` if the directory is missing or unmounted (a
+        `shutil.disk_usage` `OSError`), so a caller like `health.snapshot()`
+        can degrade gracefully rather than crash on an adverse disk
+        condition it exists to detect.
+        """
+        try:
+            return shutil.disk_usage(self._directory).free
+        except OSError:
+            return None
 
     def sealed_segment_ids(self) -> list[int]:
         """Every segment id whose ``segments`` row has ``sealed_at`` set, in order."""

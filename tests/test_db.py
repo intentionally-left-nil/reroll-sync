@@ -144,7 +144,7 @@ def test_connect_writer_connection_is_usable_from_a_different_thread(tmp_path):
         try:
             (value,) = conn.execute("SELECT 1").fetchone()
             result["value"] = value
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:
             result["error"] = exc
 
     thread = threading.Thread(target=_use_from_other_thread)

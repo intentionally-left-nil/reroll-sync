@@ -111,6 +111,19 @@ class SegmentWriter:
         self._records.append(RecordEntry(bytes.fromhex(sha256), self._block_no, offset, len(data)))
         return location
 
+    def compressed_bytes(self) -> int:
+        """Return the compressed byte count flushed to disk so far (excludes the footer/trailer).
+
+        Data buffered in the current, not-yet-flushed block is not counted;
+        it becomes visible only once that block crosses
+        ``block_target_bytes`` or :meth:`seal` flushes it explicitly.
+        """
+        return self._compressed_bytes
+
+    def age_seconds(self) -> float:
+        """Return how long (per the injected clock) this writer has been open."""
+        return self._now() - self._start
+
     def should_seal(self) -> bool:
         """True once this segment has crossed its size or age threshold."""
         elapsed = self._now() - self._start
