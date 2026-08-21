@@ -6,24 +6,24 @@ missing or stale locally, and re-syncs those projects' wheel filenames.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from .pypi_client import (
-    IndexProject,
-    ProjectFile,
-    ProjectResponse,
-    SimpleIndexResponse,
-    fetch_project,
-    fetch_simple_index,
-)
+from .pypi_client import IndexProject, ProjectFile, ProjectPage, SimpleIndex
 
-FetchIndex = Callable[[float | None], SimpleIndexResponse]
-FetchProject = Callable[[str, float | None], ProjectResponse]
+FetchIndex = Callable[[float | None], SimpleIndex]
+FetchProject = Callable[[str, float | None], ProjectPage]
+
+
+def _default_fetch_index(timeout: float | None) -> SimpleIndex:
+    raise NotImplementedError("sync_index requires an explicit fetch_index callable")
+
+
+def _default_fetch_project(name: str, timeout: float | None) -> ProjectPage:
+    raise NotImplementedError("sync_index requires an explicit fetch_project_files callable")
 
 
 @dataclass(frozen=True)
@@ -41,8 +41,8 @@ def sync_index(
     *,
     timeout: float | None = None,
     limit: int | None = None,
-    fetch_index: FetchIndex = fetch_simple_index,
-    fetch_project_files: FetchProject = fetch_project,
+    fetch_index: FetchIndex = _default_fetch_index,
+    fetch_project_files: FetchProject = _default_fetch_project,
 ) -> SyncStats:
     """Run one pass of the update algorithm against ``conn``.
 
@@ -112,7 +112,7 @@ def _insert_wheels(
         cursor = conn.execute(
             "INSERT INTO wheels (filename, project, pypi_simple, updated_at) "
             "VALUES (?, ?, ?, ?) ON CONFLICT(filename) DO NOTHING",
-            (file.filename, project_name, json.dumps(file.raw), updated_at),
+            (file.filename, project_name, file.url, updated_at),
         )
         inserted += cursor.rowcount
     return inserted

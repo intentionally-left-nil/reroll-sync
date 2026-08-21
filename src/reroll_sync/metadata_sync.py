@@ -18,12 +18,22 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from .metadata_download import fetch_metadata
+import httpx
+
 from .pypi_client import metadata_hashes
 from .r2_client import R2Config, R2UploadError, upload_bytes
 
 FetchMetadata = Callable[[str, float | None], bytes]
 Upload = Callable[[R2Config, str, bytes], None]
+
+
+def _fetch_metadata(url: str, timeout: float | None = None) -> bytes:
+    """Download and return the raw bytes at ``url``."""
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        return response.content
+
 
 _NOT_A_REROLL_ERROR = "reroll-sync"
 """``errors.reroll_version`` for an error that didn't come from the ``reroll``
@@ -56,7 +66,7 @@ def sync_metadata(
     *,
     timeout: float | None = None,
     limit: int | None = None,
-    fetch_metadata_bytes: FetchMetadata = fetch_metadata,
+    fetch_metadata_bytes: FetchMetadata = _fetch_metadata,
     upload: Upload = upload_bytes,
 ) -> MetadataSyncStats:
     """Run one pass of the metadata download/upload algorithm against ``conn``.

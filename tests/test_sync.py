@@ -6,8 +6,8 @@ from reroll_sync.db import init_db
 from reroll_sync.pypi_client import (
     IndexProject,
     ProjectFile,
-    ProjectResponse,
-    SimpleIndexResponse,
+    ProjectPage,
+    SimpleIndex,
 )
 from reroll_sync.sync import sync_index
 
@@ -23,18 +23,19 @@ def conn(tmp_path):
         connection.close()
 
 
-def _index(*projects: tuple[str, int]) -> SimpleIndexResponse:
-    return SimpleIndexResponse(
+def _index(*projects: tuple[str, int]) -> SimpleIndex:
+    return SimpleIndex(
         last_serial=999,
         projects=tuple(IndexProject(name=name, serial=serial) for name, serial in projects),
     )
 
 
-def _project(last_serial: int, *filenames: str) -> ProjectResponse:
-    return ProjectResponse(
+def _project(last_serial: int, *filenames: str) -> ProjectPage:
+    return ProjectPage(
         last_serial=last_serial,
         files=tuple(
-            ProjectFile(filename=filename, raw={"filename": filename}) for filename in filenames
+            ProjectFile(filename=filename, url=f"https://files.pythonhosted.org/{filename}")
+            for filename in filenames
         ),
     )
 
