@@ -1447,18 +1447,15 @@ def test_no_module_outside_writer_owns_transaction_boundaries():
     """The writer thread is the sole runtime commit boundary.
 
     Excluded: ``db.py``'s ``init_db`` (one-time bootstrap before the writer
-    exists), ``sync.py`` and ``metadata_sync.py`` (not yet wired onto
-    ``Writer``/``WriteOp``), and ``archive/store.py`` (takes its own
-    ``conn`` directly, not yet integrated with ``Writer``). ``cli.py`` and
-    ``stats.py`` call into the modules above rather than committing
-    directly, so they need no explicit exclusion.
+    exists) and ``archive/store.py`` (takes its own ``conn`` directly, not
+    yet integrated with ``Writer``). ``cli.py`` and ``stats.py`` call into
+    the modules above rather than committing directly, so they need no
+    explicit exclusion.
     """
     src_root = Path(__file__).resolve().parent.parent / "src" / "reroll_sync"
     excluded = {
         src_root / "writer.py",
         src_root / "db.py",
-        src_root / "sync.py",
-        src_root / "metadata_sync.py",
         src_root / "archive" / "store.py",
     }
     pattern = re.compile(

@@ -21,7 +21,6 @@ import sys
 from typing import NoReturn
 
 from .db import SchemaMismatchError, connect, init_db
-from .metadata_sync import sync_metadata
 from .r2_client import R2Config, R2ConfigError, r2_config_from_env
 from .stats import compute_stats
 
@@ -56,6 +55,19 @@ def _sync_index(
     raise NotImplementedError(
         "sync-index is not yet implemented against the spec 08 ingestion module; "
         "see reroll_sync.ingest"
+    )
+
+
+def _sync_metadata(
+    conn: sqlite3.Connection,
+    r2_config: R2Config,
+    *,
+    timeout: float | None = None,
+    limit: int | None = None,
+) -> NoReturn:
+    raise NotImplementedError(
+        "sync-metadata is not yet implemented against the spec 09 fetch stage; "
+        "see reroll_sync.fetch"
     )
 
 
@@ -219,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         conn = connect(args.db_path)
         try:
-            metadata_stats = sync_metadata(conn, r2_config, timeout=args.timeout, limit=args.limit)
+            metadata_stats = _sync_metadata(conn, r2_config, timeout=args.timeout, limit=args.limit)
         finally:
             conn.close()
         print(
