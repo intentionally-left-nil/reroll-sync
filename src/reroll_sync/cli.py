@@ -24,7 +24,6 @@ from .db import SchemaMismatchError, connect, init_db
 from .metadata_sync import sync_metadata
 from .r2_client import R2Config, R2ConfigError, r2_config_from_env
 from .stats import compute_stats
-from .sync import sync_index
 
 DEFAULT_DB_PATH = "reroll_sync.db"
 
@@ -46,6 +45,18 @@ def _sync_reroll(
     limit: int | None = None,
 ) -> NoReturn:
     raise NotImplementedError("sync-reroll is not yet implemented")
+
+
+def _sync_index(
+    conn: sqlite3.Connection,
+    *,
+    timeout: float | None = None,
+    limit: int | None = None,
+) -> NoReturn:
+    raise NotImplementedError(
+        "sync-index is not yet implemented against the spec 08 ingestion module; "
+        "see reroll_sync.ingest"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -253,12 +264,7 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = connect(args.db_path)
     try:
-        stats = sync_index(conn, timeout=args.timeout, limit=args.limit)
+        _sync_index(conn, timeout=args.timeout, limit=args.limit)
     finally:
         conn.close()
-    print(
-        f"Synced {stats.projects_updated}/{stats.projects_outdated} outdated "
-        f"project(s), inserted {stats.wheels_inserted} wheel(s)"
-        + (" (stopped early: timeout reached)" if stats.stopped_early else "")
-    )
     return 0
