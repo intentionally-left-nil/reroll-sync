@@ -170,6 +170,7 @@ class _ChangedWheel:
     wheel_id: int
     changes: dict[str, Any]
     delete_no_sidecar_skip: bool
+    delete_repodata: bool
 
 
 @dataclass(frozen=True)
@@ -712,11 +713,17 @@ def _diff_common(local: _LocalWheelRow, file: ProjectFile) -> _ChangedWheel | No
             "yanked_reason": file.yanked_reason,
             "blob_sha256": None,
         }
-        return _ChangedWheel(wheel_id=local.id, changes=changes, delete_no_sidecar_skip=False)
+        return _ChangedWheel(
+            wheel_id=local.id,
+            changes=changes,
+            delete_no_sidecar_skip=False,
+            delete_repodata=False,
+        )
 
     changes = {}
     new_state = local.state
     delete_no_sidecar_skip = False
+    delete_repodata = False
 
     if local.yanked != file.yanked or local.yanked_reason != file.yanked_reason:
         changes["yanked"] = int(file.yanked)
@@ -746,6 +753,8 @@ def _diff_common(local: _LocalWheelRow, file: ProjectFile) -> _ChangedWheel | No
         )
         new_state = WheelState.NEED_METADATA
         changes["blob_sha256"] = None
+        changes["conda_name"] = None
+        delete_repodata = True
 
     if local.state == WheelState.NO_METADATA and file.has_metadata:
         new_state = WheelState.NEED_METADATA
@@ -768,7 +777,10 @@ def _diff_common(local: _LocalWheelRow, file: ProjectFile) -> _ChangedWheel | No
     if not changes:
         return None
     return _ChangedWheel(
-        wheel_id=local.id, changes=changes, delete_no_sidecar_skip=delete_no_sidecar_skip
+        wheel_id=local.id,
+        changes=changes,
+        delete_no_sidecar_skip=delete_no_sidecar_skip,
+        delete_repodata=delete_repodata,
     )
 
 
@@ -834,6 +846,8 @@ def _build_project_write_op(
                     "DELETE FROM skips WHERE wheel_id = ? AND reason = ? AND permanent = 1",
                     (change.wheel_id, NO_SIDECAR_SKIP_REASON),
                 )
+            if change.delete_repodata:
+                conn.execute("DELETE FROM wheel_repodata WHERE wheel_id = ?", (change.wheel_id,))
             updated += 1
 
         tombstoned = 0

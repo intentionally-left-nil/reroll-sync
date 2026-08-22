@@ -179,19 +179,21 @@ def _insert_wheel(
     yanked: bool = False,
     yanked_reason: str | None = None,
     blob_sha256: str | None = None,
+    conda_name: str | None = None,
     serial: int = 1,
     change_seq: int = 1,
     deleted_at: str | None = None,
     updated_at: str = "2024-01-01T00:00:00+00:00",
 ) -> int:
     cursor = conn.execute(
-        "INSERT INTO wheels (filename, project, state, lane, url, wheel_sha256, "
+        "INSERT INTO wheels (filename, project, conda_name, state, lane, url, wheel_sha256, "
         "metadata_sha256, size, upload_time, requires_python, yanked, yanked_reason, "
         "blob_sha256, serial, change_seq, deleted_at, updated_at) "
-        "VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             filename,
             project,
+            conda_name,
             int(state),
             url or f"https://files.pythonhosted.org/{filename}",
             wheel_sha256,
@@ -240,6 +242,17 @@ def _errors_rows(conn: sqlite3.Connection) -> list[tuple]:
     return conn.execute(
         "SELECT wheel_id, error_category, error_subcat, details FROM errors"
     ).fetchall()
+
+
+def _wheel_conda_name(conn: sqlite3.Connection, filename: str) -> str | None:
+    row = conn.execute("SELECT conda_name FROM wheels WHERE filename = ?", (filename,)).fetchone()
+    assert row is not None, f"no wheels row for {filename!r}"
+    return row[0]
+
+
+def _wheel_repodata_exists(conn: sqlite3.Connection, wheel_id: int) -> bool:
+    row = conn.execute("SELECT 1 FROM wheel_repodata WHERE wheel_id = ?", (wheel_id,)).fetchone()
+    return row is not None
 
 
 def _now() -> float:
@@ -744,6 +757,49 @@ def test_metadata_sha256_changed_with_archived_blob_clears_blob_and_warns(reader
     assert row[4] == "new-hash"
     assert row[10] is None
     assert "does not match archived blob_sha256" in caplog.text
+
+
+def test_metadata_sha256_changed_on_ready_wheel_clears_repodata_and_conda_name(
+    reader, writer, caplog
+):
+    """A READY wheel already has a ``wheel_repodata`` row and ``conda_name`` set.
+
+    A later poll reporting a ``metadata_sha256`` that no longer matches the
+    archived ``blob_sha256`` bounces the wheel back to ``NEED_METADATA``; both
+    must be cleared along with it, or the row violates fsck's
+    ``1b_repodata_without_ready`` and ``19_conda_name_outside_ready``
+    invariants.
+    """
+    wheel_id = _insert_wheel(
+        reader,
+        filename="pkg-1.0-py3-none-any.whl",
+        state=WheelState.READY,
+        metadata_sha256="old-hash",
+        blob_sha256="archived-blob",
+        conda_name="pkg",
+    )
+    reader.execute(
+        "INSERT INTO wheel_repodata (wheel_id, repodata_zst, reroll_version) VALUES (?, ?, '1.0')",
+        (wheel_id, b"x"),
+    )
+    reader.commit()
+
+    page = _project_payload(
+        last_serial=2,
+        files=[_file("pkg-1.0-py3-none-any.whl", core_metadata={"sha256": "new-hash"})],
+    )
+    client = _make_client(_json_handler(page))
+
+    with caplog.at_level("WARNING", logger="reroll_sync.ingest"):
+        outcome = sync_project(client, reader, "proj", now=_now)
+        apply_project_outcome(writer, None, "proj", outcome, now=_now)
+
+    row = _wheel_row(reader, "pkg-1.0-py3-none-any.whl")
+    assert row[1] == int(WheelState.NEED_METADATA)
+    assert row[4] == "new-hash"
+    assert row[10] is None
+    assert _wheel_conda_name(reader, "pkg-1.0-py3-none-any.whl") is None
+    assert not _wheel_repodata_exists(reader, wheel_id)
 
 
 def test_metadata_sha256_mismatch_on_self_healed_row_warns_and_resets(reader, writer, caplog):
