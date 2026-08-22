@@ -18,11 +18,13 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from reroll.name_mapping import passthrough_mapper
 
 from reroll_sync.daemon.config import Config
 from reroll_sync.daemon.service import Daemon
@@ -38,6 +40,29 @@ class _AlwaysGrantLimiter:
 
     def penalize(self, child_name: str, seconds: float) -> None:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _network_free_convert_pool(monkeypatch):
+    """`Daemon._build_convert` normally spins up a real `ProcessPoolExecutor`
+    whose `initializer` (`worker_init`) calls `reroll.default_mappers()` --
+    lookup tables that fetch from the network on a cold cache, making the
+    bulk-convert test below flaky in CI's clean environment even though
+    this module otherwise never touches the network (see module docstring).
+
+    Swap in a `ThreadPoolExecutor`: worker threads share this process's
+    memory, so the module globals `worker_init` sets are visible to
+    `convert_in_worker` regardless of which thread runs it.
+    """
+    monkeypatch.setattr("reroll_sync.convert.reroll.default_mappers", lambda: (passthrough_mapper,))
+
+    def _fake_process_pool(max_workers=None, initializer=None, initargs=()):
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        if initializer is not None:
+            initializer(*initargs)
+        return pool
+
+    monkeypatch.setattr("reroll_sync.daemon.service.ProcessPoolExecutor", _fake_process_pool)
 
 
 @pytest.fixture

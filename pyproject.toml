@@ -1,6 +1,6 @@
 [project]
 name = "reroll-sync"
-version = "0.1.0"
+version = "0.2.0"
 description = "Backend tools to keep repodata.json in sync with a pypi wheel index"
 readme = "README.md"
 authors = [

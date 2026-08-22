@@ -138,6 +138,16 @@ def test_stale_socket_file_left_behind_by_a_crashed_daemon_raises(socket_dir):
         send_control_command(stale, "status")
 
 
+def test_other_connect_oserror_raises_naming_the_path(socket_dir):
+    # A path longer than AF_UNIX's ``sun_path`` buffer (104-108 bytes,
+    # depending on platform) makes the kernel-level `connect` fail with a
+    # plain `OSError` -- neither `FileNotFoundError` nor
+    # `ConnectionRefusedError` -- exercising the catch-all branch.
+    too_long = socket_dir / ("a" * 200)
+    with pytest.raises(ControlClientError, match="could not connect"):
+        send_control_command(too_long, "status")
+
+
 # ---------------------------------------------------------------------------
 # Socket present but not accepting: bounded, never hangs
 # ---------------------------------------------------------------------------

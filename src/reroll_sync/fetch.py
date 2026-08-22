@@ -87,10 +87,11 @@ _MISSING_SEGMENT_REASON = "archive_segment_missing"
 _MISSING_BLOB_REASON = "archive_blob_missing"
 _RECOVERY_CHUNK_SIZE = 500
 
-# --- TEMPORARY import-bridge probe (see specs/13-import-bridge.md) ---------
-# NOT the real spec 13 import path -- just re-routes fetch_one's download
-# through the old corpus first, to sanity-check that the join key and zlib
-# bodies behave as spec 13 assumes. Revert before commit.
+# --- Import-bridge lookup (see specs/13-import-bridge.md) ------------------
+# Lets fetch_one serve a wheel's .metadata body straight from the old
+# corpus's metadata_blob table before ever hitting PyPI, using the same
+# metadata_sha256 join key spec 13 describes. A wheel already present in
+# the old corpus therefore never needs a network round trip.
 _BRIDGE_DB_PATH_ENV_VAR = "REROLL_DATA_BRIDGE_DB_PATH"
 
 
@@ -132,7 +133,7 @@ def _bridge_lookup(metadata_sha256: str | None) -> bytes | None:
     return data
 
 
-# --- end temporary import-bridge probe --------------------------------------
+# --- end import-bridge lookup ------------------------------------------
 
 
 # ---------------------------------------------------------------------------

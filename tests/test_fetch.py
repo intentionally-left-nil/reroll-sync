@@ -7,8 +7,10 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
+import pathlib
 import sqlite3
 import threading
+import zlib
 from typing import cast
 
 import httpx
@@ -252,6 +254,147 @@ def test_fetch_one_performs_no_database_write():
     client = _client(handler)
     outcome = fetch_one(client, _item(), now=_clock())
     assert isinstance(outcome, FetchOk)
+
+
+# ---------------------------------------------------------------------------
+# import-bridge lookup
+# ---------------------------------------------------------------------------
+
+
+def _bridge_db(tmp_path, rows: list[tuple[str, bytes]]):
+    """Build a minimal ``metadata_blob`` table at ``tmp_path/bridge.db``
+    containing one ``(sha256, z_body)`` row per entry in ``rows``.
+    """
+    path = tmp_path / "bridge.db"
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE metadata_blob (sha256 TEXT PRIMARY KEY, z_body BLOB NOT NULL)")
+        conn.executemany("INSERT INTO metadata_blob (sha256, z_body) VALUES (?, ?)", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+def test_bridge_db_path_returns_none_when_env_var_unset(monkeypatch):
+    from reroll_sync.fetch import _bridge_db_path
+
+    monkeypatch.delenv("REROLL_DATA_BRIDGE_DB_PATH", raising=False)
+
+    assert _bridge_db_path() is None
+
+
+def test_bridge_db_path_expands_user(monkeypatch):
+    from reroll_sync.fetch import _bridge_db_path
+
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", "~/bridge.db")
+
+    assert _bridge_db_path() == pathlib.Path("~/bridge.db").expanduser()
+
+
+def test_bridge_lookup_returns_none_when_metadata_sha256_is_none(tmp_path, monkeypatch):
+    from reroll_sync.fetch import _bridge_lookup
+
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(_bridge_db(tmp_path, [])))
+
+    assert _bridge_lookup(None) is None
+
+
+def test_bridge_lookup_returns_none_when_env_var_unset(monkeypatch):
+    from reroll_sync.fetch import _bridge_lookup
+
+    monkeypatch.delenv("REROLL_DATA_BRIDGE_DB_PATH", raising=False)
+
+    assert _bridge_lookup("e" * 64) is None
+
+
+def test_bridge_lookup_returns_none_when_db_path_does_not_exist(tmp_path, monkeypatch):
+    from reroll_sync.fetch import _bridge_lookup
+
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(tmp_path / "missing.db"))
+
+    assert _bridge_lookup("e" * 64) is None
+
+
+def test_bridge_lookup_returns_none_when_db_cannot_be_opened(tmp_path, monkeypatch):
+    from reroll_sync.fetch import _bridge_lookup
+
+    # A directory, not a file: exists() is True but sqlite3 can't open it as
+    # a database, so connect() itself raises OperationalError.
+    not_a_db = tmp_path / "bridge.db"
+    not_a_db.mkdir()
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(not_a_db))
+
+    assert _bridge_lookup("e" * 64) is None
+
+
+def test_bridge_lookup_returns_none_on_a_miss(tmp_path, monkeypatch):
+    from reroll_sync.fetch import _bridge_lookup
+
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(_bridge_db(tmp_path, [])))
+
+    assert _bridge_lookup("e" * 64) is None
+
+
+def test_bridge_lookup_returns_decompressed_bytes_on_a_hit(tmp_path, monkeypatch):
+    from reroll_sync.fetch import _bridge_lookup
+
+    data = b"Metadata-Version: 2.1\nName: widget\n"
+    sha256 = hashlib.sha256(data).hexdigest()
+    db_path = _bridge_db(tmp_path, [(sha256, zlib.compress(data))])
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(db_path))
+
+    assert _bridge_lookup(sha256) == data
+
+
+def test_bridge_lookup_returns_none_and_logs_on_a_sha256_mismatch(tmp_path, monkeypatch, caplog):
+    from reroll_sync.fetch import _bridge_lookup
+
+    data = b"Metadata-Version: 2.1\nName: widget\n"
+    claimed_sha256 = "e" * 64
+    db_path = _bridge_db(tmp_path, [(claimed_sha256, zlib.compress(data))])
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(db_path))
+
+    with caplog.at_level(logging.WARNING, logger="reroll_sync.fetch"):
+        outcome = _bridge_lookup(claimed_sha256)
+
+    assert outcome is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert claimed_sha256 in warnings[0].message
+
+
+def test_fetch_one_serves_a_bridge_hit_without_touching_the_network(tmp_path, monkeypatch):
+    data = b"Metadata-Version: 2.1\nName: widget\n"
+    sha256 = hashlib.sha256(data).hexdigest()
+    db_path = _bridge_db(tmp_path, [(sha256, zlib.compress(data))])
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(db_path))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a bridge hit must not fetch from PyPI")
+
+    client = _client(handler)
+    outcome = fetch_one(client, _item(metadata_sha256=sha256), now=_clock())
+
+    assert isinstance(outcome, FetchOk)
+    assert outcome.data == data
+    assert outcome.sha256 == sha256
+
+
+def test_fetch_one_falls_through_to_the_network_on_a_bridge_miss(tmp_path, monkeypatch):
+    monkeypatch.setenv("REROLL_DATA_BRIDGE_DB_PATH", str(_bridge_db(tmp_path, [])))
+    data = b"fetched from pypi"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=data, request=request)
+
+    client = _client(handler)
+    outcome = fetch_one(
+        client, _item(metadata_sha256=hashlib.sha256(data).hexdigest()), now=_clock()
+    )
+
+    assert isinstance(outcome, FetchOk)
+    assert outcome.data == data
 
 
 # ---------------------------------------------------------------------------

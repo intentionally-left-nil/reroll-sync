@@ -23,7 +23,7 @@ import httpx
 import pytest
 
 from reroll_sync.daemon.config import Config
-from reroll_sync.daemon.service import Daemon
+from reroll_sync.daemon.service import SHUTDOWN_GRACE_SECONDS, Daemon
 from reroll_sync.db import SchemaMismatchError, init_db
 from reroll_sync.dispatcher import QueueItem
 from reroll_sync.fetch import ByteBudgetedQueue, HandoffItem
@@ -31,6 +31,15 @@ from reroll_sync.pypi_client import PyPIClient, PyPITransientError
 from reroll_sync.schema import WheelState
 
 _USER_AGENT = "reroll-sync-test (contact@example.invalid)"
+
+_ASYNC_SHUTDOWN_WAIT_TIMEOUT = SHUTDOWN_GRACE_SECONDS + 5.0
+"""Bound for waiting on a shutdown triggered on a background thread (the
+control socket's `shutdown` command, or a signal handler) rather than
+called directly: `Daemon.shutdown` itself has no upper bound tighter than
+`SHUTDOWN_GRACE_SECONDS`, so a wait bound below that -- 5s, say -- can
+flake under a loaded CI runner even though the daemon is behaving exactly
+as documented.
+"""
 
 
 @pytest.fixture
@@ -859,7 +868,7 @@ def test_shutdown_via_control_socket_eventually_stops_the_daemon(
     response = _request(daemon.config.socket_path, {"command": "shutdown"})
     assert response["ok"] is True
 
-    assert daemon._stopped_event.wait(timeout=5.0)
+    assert daemon._stopped_event.wait(timeout=_ASYNC_SHUTDOWN_WAIT_TIMEOUT)
     assert not daemon.config.socket_path.exists()
 
 
@@ -938,7 +947,7 @@ def test_first_signal_triggers_shutdown_on_a_background_thread(
     handler = cast("Callable[[int, object], None]", signal_module.getsignal(signal_module.SIGTERM))
     handler(signal_module.SIGTERM, None)
 
-    assert daemon._stopped_event.wait(timeout=5.0)
+    assert daemon._stopped_event.wait(timeout=_ASYNC_SHUTDOWN_WAIT_TIMEOUT)
 
 
 def test_run_forever_blocks_until_shutdown_completes(work_dir, socket_dir, daemon_factory):
