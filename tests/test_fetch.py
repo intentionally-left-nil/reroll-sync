@@ -50,6 +50,7 @@ from reroll_sync.fetch import (
 )
 from reroll_sync.pypi_client import PyPIClient
 from reroll_sync.schema import WheelState
+from reroll_sync.shutdown import ShutdownError
 from reroll_sync.version import REROLL_VERSION
 from reroll_sync.writer import Writer
 
@@ -864,6 +865,15 @@ def test_put_after_close_raises_immediately():
     queue = ByteBudgetedQueue(budget_bytes=100)
     queue.close()
     with pytest.raises(QueueClosed):
+        queue.put("value", size=1)
+
+
+def test_put_after_close_raises_shutdown_error():
+    """A closed queue's `put` is a `ShutdownError`: a task root that catches
+    the shared base type exits cleanly on it, whichever boundary raised."""
+    queue = ByteBudgetedQueue(budget_bytes=100)
+    queue.close()
+    with pytest.raises(ShutdownError):
         queue.put("value", size=1)
 
 

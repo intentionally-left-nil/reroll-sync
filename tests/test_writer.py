@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from reroll_sync.db import init_db
+from reroll_sync.shutdown import ShutdownError
 from reroll_sync.writer import (
     ReadTxnBudgetExceeded,
     ReadTxnWatchdog,
@@ -785,6 +786,19 @@ def test_submit_and_wait_after_stop_raises(db_path, writers):
     writer.stop(drain=False)
     with pytest.raises(WriterStoppedError):
         writer.submit_and_wait(WriteOp(name="too-late", apply=lambda _conn: None))
+
+
+def test_submit_after_stop_raises_shutdown_error(db_path, writers):
+    """A stopped writer's `submit` is a `ShutdownError`: a task root that
+    catches the shared base type exits cleanly on it, whichever boundary
+    raised."""
+    conn = _writer_conn(db_path)
+    clock = FakeClock()
+    writer = writers(conn, batch_size=1000, batch_interval=0.01, now=clock.now)
+    writer.start()
+    writer.stop(drain=False)
+    with pytest.raises(ShutdownError):
+        writer.submit(WriteOp(name="too-late", apply=lambda _conn: None))
 
 
 def test_stop_is_idempotent(db_path, writers):

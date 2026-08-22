@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from ..shutdown import ShutdownError, run_task, throw_if_shutting_down
+
 
 class Trigger(Protocol):
     """Decides whether a :class:`StageLoop` iteration is due, and how long to wait if not."""
@@ -107,6 +109,12 @@ class StageLoop:
     dies and the daemon can crash loudly instead of limping along with a
     broken stage. Every other exception is caught, logged, and counted;
     the loop continues.
+
+    ``ShutdownError`` is the one exception to that: a cross-thread boundary
+    going away mid-shutdown (see ``shutdown.py``'s crash-with-cleanup
+    contract) propagates out of :meth:`run_once` like a fatal exception --
+    but uncounted as a failure -- and makes :meth:`run_forever` exit
+    cleanly.
     """
 
     def __init__(
@@ -163,6 +171,7 @@ class StageLoop:
         A paused stage claims nothing: `iterate` is not called at all, so
         it never even attempts a claim, and returns ``False``.
         """
+        throw_if_shutting_down(self._shutdown_event, f"stage {self.name!r}")
         with self._lock:
             self._last_run_at = self._now()
             paused = self._paused
@@ -173,6 +182,8 @@ class StageLoop:
         try:
             did_work = self._iterate()
         except self._fatal_exceptions:
+            raise
+        except ShutdownError:
             raise
         except Exception:
             with self._lock:
@@ -193,8 +204,13 @@ class StageLoop:
         """Run :meth:`run_once` on ``trigger``'s schedule until ``shutdown_event`` is set.
 
         Every wait is bounded (``shutdown_event.wait(timeout=...)``), so an
-        already-set event always stops this promptly, even mid-interval.
+        already-set event always stops this promptly, even mid-interval. A
+        ``ShutdownError`` out of an iteration ends the loop the same way --
+        cleanly, via ``run_task``.
         """
+        run_task(f"stage {self.name!r}", self._loop_until_shutdown, logger=self._logger)
+
+    def _loop_until_shutdown(self) -> None:
         while not self._shutdown_event.is_set():
             if self._trigger.due():
                 self.run_once()

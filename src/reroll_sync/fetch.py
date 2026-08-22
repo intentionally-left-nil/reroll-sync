@@ -64,6 +64,7 @@ from .pypi_client import (
     PyPITransientError,
 )
 from .schema import WheelState
+from .shutdown import ShutdownError
 from .writer import WriteOp, Writer, read_txn
 
 logger = logging.getLogger(__name__)
@@ -309,7 +310,7 @@ def dispatch_fetch_item(
 # ---------------------------------------------------------------------------
 
 
-class QueueClosed(RuntimeError):
+class QueueClosed(ShutdownError):
     """Raised by :meth:`ByteBudgetedQueue.put` once the queue has been closed."""
 
 

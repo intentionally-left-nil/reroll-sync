@@ -935,6 +935,46 @@ def test_archive_thread_crash_is_logged_and_reraised(work_dir, socket_dir, daemo
     assert "archive thread crashed" in capsys.readouterr().out
 
 
+def test_archive_thread_exits_cleanly_when_writer_stops_mid_drain(
+    work_dir, socket_dir, daemon_factory, capsys
+):
+    """`Daemon.shutdown` joins the archive thread with only what remains of
+    `SHUTDOWN_GRACE_SECONDS`; a handoff backlog that outlasts it means
+    `writer.stop()` runs while the archive thread is mid-`process_one`, so
+    the next `apply_outcome` -> `submit_and_wait` raises
+    `WriterStoppedError`. That is an expected shutdown race, not a crash:
+    the item's outcome was never applied, so its wheel is still claimable
+    and its bytes sit in an unsealed segment that the next startup's
+    recovery truncates. The thread must exit quietly instead of logging
+    CRITICAL and re-raising.
+    """
+    daemon = daemon_factory(_config(work_dir, socket_dir))
+    daemon.start()
+    daemon.handoff_queue.close()
+    daemon.archive_thread.join(timeout=5.0)
+    assert not daemon.archive_thread.is_alive()
+
+    wheel_id = _insert_wheel(daemon.config.db_path, filename="widget-1.0-py3-none-any.whl")
+    daemon.handoff_queue = ByteBudgetedQueue(budget_bytes=10_000)
+    daemon.archive_handoff._queue = daemon.handoff_queue
+    daemon.handoff_queue.put(
+        HandoffItem(
+            queue_item=QueueItem(
+                id=wheel_id, project="widget", lane=0, state=WheelState.NEED_METADATA
+            ),
+            filename="widget-1.0-py3-none-any.whl",
+            data=b"x",
+            sha256="a" * 64,
+        ),
+        size=1,
+    )
+    daemon.writer.stop()
+
+    daemon._run_archive_thread()
+
+    assert "archive thread crashed" not in capsys.readouterr().out
+
+
 def test_first_signal_triggers_shutdown_on_a_background_thread(
     work_dir, socket_dir, daemon_factory
 ):
