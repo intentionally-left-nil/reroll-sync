@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import pathlib
 import sqlite3
 import threading
+import zlib
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -83,6 +86,53 @@ _CORRUPT_BLOB_REASON = "corrupt_blob"
 _MISSING_SEGMENT_REASON = "archive_segment_missing"
 _MISSING_BLOB_REASON = "archive_blob_missing"
 _RECOVERY_CHUNK_SIZE = 500
+
+# --- TEMPORARY import-bridge probe (see specs/13-import-bridge.md) ---------
+# NOT the real spec 13 import path -- just re-routes fetch_one's download
+# through the old corpus first, to sanity-check that the join key and zlib
+# bodies behave as spec 13 assumes. Revert before commit.
+_BRIDGE_DB_PATH_ENV_VAR = "REROLL_DATA_BRIDGE_DB_PATH"
+
+
+def _bridge_db_path() -> pathlib.Path | None:
+    """Return the old-corpus db path from ``$REROLL_DATA_BRIDGE_DB_PATH``, or
+    ``None`` if that variable is unset.
+    """
+    raw = os.environ.get(_BRIDGE_DB_PATH_ENV_VAR)
+    if not raw:
+        return None
+    return pathlib.Path(raw).expanduser()
+
+
+def _bridge_lookup(metadata_sha256: str | None) -> bytes | None:
+    """Return the ``.metadata`` body for ``metadata_sha256`` from the old
+    corpus at ``$REROLL_DATA_BRIDGE_DB_PATH``, or ``None`` on a miss, an
+    unset/missing/locked database, or a body whose decompressed sha256
+    doesn't match.
+    """
+    db_path = _bridge_db_path()
+    if metadata_sha256 is None or db_path is None or not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT z_body FROM metadata_blob WHERE sha256 = ?", (metadata_sha256,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    data = zlib.decompress(row[0])
+    if hashlib.sha256(data).hexdigest() != metadata_sha256:
+        logger.warning("bridge: %s decompressed to a mismatched sha256; ignoring", metadata_sha256)
+        return None
+    return data
+
+
+# --- end temporary import-bridge probe --------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +229,10 @@ def fetch_one(client: PyPIClient, wheel: FetchItem, *, now: Callable[[], float])
             reason=_PROGRAMMING_ERROR_REASON,
             details=f"wheel {wheel.filename!r} (id={wheel.id}) should have been NO_METADATA",
         )
+
+    bridged = _bridge_lookup(wheel.metadata_sha256)
+    if bridged is not None:
+        return FetchOk(data=bridged, sha256=hashlib.sha256(bridged).hexdigest())
 
     url = f"{wheel.url}.metadata"
     try:
