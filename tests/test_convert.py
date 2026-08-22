@@ -1,3 +1,4 @@
+import logging
 import pickle
 
 import pytest
@@ -27,6 +28,7 @@ from reroll_sync.convert import (
     convert_in_worker,
     worker_init,
 )
+from reroll_sync.daemon.logging_setup import NOISY_REROLL_LOGGERS
 from reroll_sync.version import REROLL_VERSION
 
 _MAPPERS = (passthrough_mapper,)
@@ -608,3 +610,14 @@ def test_convert_in_worker_before_worker_init_raises_runtime_error(monkeypatch):
 
     with pytest.raises(RuntimeError):
         convert_in_worker(_metadata_bytes(), "example-1.0-py3-none-any.whl")
+
+
+def test_worker_init_silences_noisy_reroll_loggers(monkeypatch):
+    for name in NOISY_REROLL_LOGGERS:
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    monkeypatch.setattr("reroll_sync.convert.reroll.default_mappers", lambda: _MAPPERS)
+
+    worker_init(REROLL_VERSION)
+
+    for name in NOISY_REROLL_LOGGERS:
+        assert logging.getLogger(name).level == logging.ERROR

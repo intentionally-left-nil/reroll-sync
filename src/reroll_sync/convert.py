@@ -21,6 +21,8 @@ from reroll.errors import (
     UnsupportedPrereleaseError,
 )
 
+from .daemon.logging_setup import silence_noisy_reroll_loggers
+
 Parse = Callable[[str], WheelMetadata]
 GetWheelRecords = Callable[..., tuple[WheelRecord, ...]]
 
@@ -162,9 +164,12 @@ def worker_init(reroll_version: str) -> None:
     """``ProcessPoolExecutor`` initializer: builds ``default_mappers()``
     once per process and stashes it (plus ``reroll_version``) in a module
     global for ``convert_in_worker`` to reuse across every wheel the
-    process converts.
+    process converts. Also silences reroll's noisy per-wheel loggers,
+    since a worker process started via ``spawn`` never inherits the main
+    process's ``configure_logging`` call.
     """
     global _mappers, _reroll_version
+    silence_noisy_reroll_loggers()
     _mappers = reroll.default_mappers()
     _reroll_version = reroll_version
 

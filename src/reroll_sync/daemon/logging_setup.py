@@ -77,5 +77,16 @@ def configure_logging(*, level: int = logging.INFO, stream: IO[str] | None = Non
     root.handlers = [handler]
     root.propagate = False
 
+    silence_noisy_reroll_loggers()
+
+
+def silence_noisy_reroll_loggers() -> None:
+    """Sets each of :data:`NOISY_REROLL_LOGGERS` to ``ERROR``.
+
+    Callers that run outside the process ``configure_logging`` was called
+    in -- e.g. a ``ProcessPoolExecutor`` worker started via ``spawn``, which
+    gets a fresh, unconfigured logging module rather than inheriting the
+    parent process's levels -- must call this themselves.
+    """
     for name in NOISY_REROLL_LOGGERS:
         logging.getLogger(name).setLevel(logging.ERROR)
