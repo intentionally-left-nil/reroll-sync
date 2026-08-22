@@ -434,6 +434,7 @@ class Daemon:
             self.breakers[FILES_PYTHONHOSTED_ORG],
             pool=self.fetch_pool,
             disk_guard=self.disk_guard,
+            shutdown_event=self.shutdown_event,
         )
         self._fetch_stage = stage
         return StageLoop(

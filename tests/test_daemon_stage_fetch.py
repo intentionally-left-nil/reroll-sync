@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -18,7 +18,7 @@ from reroll_sync.daemon.stage_loop import PollTrigger, StageLoop
 from reroll_sync.daemon.stages.fetch import FetchStage
 from reroll_sync.db import init_db
 from reroll_sync.dispatcher import Dispatcher, QueueItem, Stage
-from reroll_sync.fetch import ByteBudgetedQueue, HandoffItem
+from reroll_sync.fetch import ByteBudgetedQueue, FetchOk, HandoffItem
 from reroll_sync.pypi_client import PyPIClient
 from reroll_sync.schema import WheelState
 from reroll_sync.writer import Writer
@@ -110,7 +110,9 @@ def _breaker() -> CircuitBreaker:
     return CircuitBreaker(failure_threshold=5, recovery_timeout=60.0)
 
 
-def _stage(reader, dispatcher, pool, handler, *, breaker=None, queue=None, limit=10) -> tuple:
+def _stage(
+    reader, dispatcher, pool, handler, *, breaker=None, queue=None, limit=10, shutdown_event=None
+) -> tuple:
     client = _client(handler)
     q = queue if queue is not None else ByteBudgetedQueue(budget_bytes=10_000)
     stage = FetchStage(
@@ -121,6 +123,7 @@ def _stage(reader, dispatcher, pool, handler, *, breaker=None, queue=None, limit
         breaker if breaker is not None else _breaker(),
         pool=pool,
         limit=limit,
+        shutdown_event=shutdown_event,
     )
     return stage, q
 
@@ -406,3 +409,108 @@ def test_pause_during_a_genuinely_in_flight_batch_lets_it_complete(db_path, writ
     did_work_after_pause = loop.run_once()
     assert did_work_after_pause is False
     assert len(calls) == 1  # no second HTTP call was ever made
+
+
+# ---------------------------------------------------------------------------
+# Prompt exit on shutdown mid-batch (spec 10: "exit promptly on a shutdown
+# event; no unbounded blocking wait without a timeout")
+# ---------------------------------------------------------------------------
+
+
+def test_shutdown_mid_batch_abandons_and_releases_the_rest_of_the_batch(db_path, writer):
+    """A claimed batch must not block `iterate` for however long the
+    *whole* batch takes once shutdown has been signaled: spec 10 requires
+    a stage loop to "exit promptly on a shutdown event; no unbounded
+    blocking wait without a timeout." Once one item's fetch completes and
+    `shutdown_event` is already set, every other item in the batch is
+    cancelled and released (re-claimable on the next run) rather than
+    waited on -- the one already-completed item is still applied
+    normally.
+
+    A fake `Executor` whose `submit` hands back a real, never-run
+    `concurrent.futures.Future` (the test resolves the first one directly
+    via `set_result`) makes this deterministic: with no real background
+    worker thread racing to start the remaining futures, `future.cancel()`
+    is guaranteed to succeed on all of them, rather than racing a real
+    thread pool to see how many it dequeues first. `iterate()` itself
+    runs on its own thread since it blocks (inside `as_completed`) until
+    this test resolves the first future -- which can only happen once
+    every item has actually been submitted (`all_submitted`).
+    """
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    thread_dispatcher = Dispatcher(conn, writer, reroll_version="1.0", now=lambda: 1_700_000_000.0)
+    shutdown_event = threading.Event()
+
+    ids = [
+        _insert_wheel(
+            db_path,
+            filename=f"widget{i}-1.0-py3-none-any.whl",
+            url=f"https://files.pythonhosted.org/x/widget{i}-1.0-py3-none-any.whl",
+        )
+        for i in range(5)
+    ]
+
+    all_submitted = threading.Event()
+
+    class _NeverRunsPool:
+        """`submit` returns a live `Future` for each call but never runs
+        anything on it: the test itself resolves whichever ones it wants
+        "genuinely in flight and already done" to look like.
+        """
+
+        def __init__(self) -> None:
+            self.futures: list[Future] = []
+
+        def submit(self, fn, *args, **kwargs):
+            del fn, args, kwargs
+            future: Future = Future()
+            self.futures.append(future)
+            if len(self.futures) == len(ids):
+                all_submitted.set()
+            return future
+
+    fake_pool = _NeverRunsPool()
+    stage, q = _stage(
+        conn,
+        thread_dispatcher,
+        fake_pool,
+        lambda request: httpx.Response(200, request=request),
+        shutdown_event=shutdown_event,
+    )
+
+    result: dict[str, bool] = {}
+
+    def _run_once() -> None:
+        result["did_work"] = stage.iterate()
+
+    runner = threading.Thread(target=_run_once)
+    runner.start()
+
+    assert all_submitted.wait(timeout=5.0)
+    shutdown_event.set()  # already signaled by the time the in-flight item completes
+    fake_pool.futures[0].set_result(FetchOk(data=b"ok-data", sha256="a" * 64))
+    runner.join(timeout=5.0)
+    assert not runner.is_alive()
+
+    assert result["did_work"] is True
+    handoff = q.get()
+    assert handoff.queue_item.id == ids[0]  # the already-completed item still applied normally
+
+    for future in fake_pool.futures[1:]:
+        assert future.cancelled()
+
+    # The completed item's release is deferred to the archive stage (see
+    # `fetch.ArchiveHandoff.process_one`), same as any other successful
+    # fetch; only the abandoned ones are released here.
+    assert ids[0] in thread_dispatcher._in_flight[Stage.FETCH]
+    for abandoned_id in ids[1:]:
+        assert abandoned_id not in thread_dispatcher._in_flight[Stage.FETCH]
+    conn.close()
+    verify_conn = sqlite3.connect(db_path)
+    try:
+        rows = verify_conn.execute("SELECT id, state FROM wheels ORDER BY id").fetchall()
+    finally:
+        verify_conn.close()
+    states = dict(rows)
+    for abandoned_id in ids[1:]:
+        assert states[abandoned_id] == int(WheelState.NEED_METADATA)  # released, re-claimable

@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Executor, as_completed
+from concurrent.futures import Executor, Future, as_completed
 from dataclasses import dataclass
 
 from ...dispatcher import Dispatcher, QueueItem, Stage
@@ -28,6 +29,7 @@ from ...fetch import (
     ByteBudgetedQueue,
     FetchItem,
     FetchOk,
+    FetchOutcome,
     FetchRetry,
     HandoffItem,
     adapt_fetch_outcome,
@@ -67,6 +69,7 @@ class FetchStage:
         now: Callable[[], float] = time.time,
         read_budget: float = DEFAULT_READ_BUDGET,
         disk_guard: DiskGuardLike | None = None,
+        shutdown_event: threading.Event | None = None,
     ) -> None:
         self._client = client
         self._dispatcher = dispatcher
@@ -78,6 +81,7 @@ class FetchStage:
         self._now = now
         self._read_budget = read_budget
         self._disk_guard = disk_guard
+        self._shutdown_event = shutdown_event
 
     def iterate(self) -> bool:
         """Claim and dispatch one batch, unless the breaker or `disk_guard` says not to.
@@ -133,7 +137,9 @@ class FetchStage:
         }
         saw_ok = False
         saw_transient_failure = False
+        pending = set(futures)
         for future in as_completed(futures):
+            pending.discard(future)
             item, fetch_item = futures[future]
             outcome = future.result()
             if isinstance(outcome, FetchOk):
@@ -145,10 +151,14 @@ class FetchStage:
                     sha256=outcome.sha256,
                 )
                 self._handoff_queue.put(handoff, size=len(outcome.data))
-                continue
-            if isinstance(outcome, FetchRetry):
-                saw_transient_failure = True
-            self._dispatcher.apply_outcome(Stage.FETCH, item, adapt_fetch_outcome(outcome))
+            else:
+                if isinstance(outcome, FetchRetry):
+                    saw_transient_failure = True
+                self._dispatcher.apply_outcome(Stage.FETCH, item, adapt_fetch_outcome(outcome))
+            if self._shutdown_event is not None and self._shutdown_event.is_set():
+                break
+
+        self._abandon_pending(pending, futures)
 
         # A pure FetchSkip/FetchRateLimited batch (PyPI's index itself
         # answered, or simply throttled us) says nothing about whether
@@ -158,6 +168,28 @@ class FetchStage:
         elif saw_ok:
             self._breaker.record_success()
         return True
+
+    def _abandon_pending(
+        self,
+        pending: set[Future[FetchOutcome]],
+        futures: dict[Future[FetchOutcome], tuple[QueueItem, FetchItem]],
+    ) -> None:
+        """Release every item in `pending` without waiting for or applying its outcome.
+
+        Called once shutdown has been signaled mid-batch: spec 10 requires
+        a stage loop to exit promptly on a shutdown event, not block for
+        however long the rest of a large, rate-limited batch takes to
+        finish. A still-running fetch keeps running in the pool -- there is
+        no way to interrupt it -- but a not-yet-started one is cancelled
+        outright; either way, its item goes back to `NEED_METADATA` to be
+        re-claimed on the next run rather than risk handing off to a
+        `handoff_queue`/`Writer` that `Daemon.shutdown` may already be
+        tearing down.
+        """
+        for future in pending:
+            future.cancel()
+            item, _fetch_item = futures[future]
+            self._dispatcher.release(Stage.FETCH, item.id)
 
     def _load_rows(self, ids: list[int]) -> dict[int, _ClaimedRow]:
         placeholders = ", ".join("?" for _ in ids)
