@@ -1,72 +1,87 @@
-# Decisions
-1. Create a pypi_index table, with the following keys: `name` (primary_key), `serial`, `updated_at`
-2. A row is only added or updated from this table when every filename for that package has been inserted into the wheels table (all the other fields may be NULL but we at least need the filename)
+# PyPI index ingestion
 
+Supersedes the previous `docs/index_ingestion.md`. Keeps the core
+algorithm and its partial-failure safety property, but removes the
+insert-only assumption: this design must support deletion and yanking of
+existing wheels, which the previous version explicitly did not attempt.
 
-# Update algorithm
-1. Store the start_time. If at any time the elapsed_time exceeds the duration, stop. The next iteration of the index job will update the data
-2. Call the simple index API
-3. SELECT name, serial FROM pypi_index to get an in-memory representation of all the completed items
-4. Filter out to have the names where name is either missing, or the serial is newer than the one in the database
-5. For each outdated name:
-    1. Query the projects API for the filename
-    2. For each row, INSERT INTO `wheels` filename, project, pypi_simple ON CONFLICT IGNORE if the filename type is `%.whl`
-6. Once the project is updated, `INSERT INTO pypi_index name, updated_at, serial **From the project page** not the index api, ON CONFLICT UPDATE updated_at`
+## What changes from the previous design
 
-If there is any partial failure, just stop processing the project and move onto the next project. The insert into pypi_index won't proceed, so the next run will try again
+* **Not insert-only.** The previous algorithm only ever inserted new
+  `wheels` rows (`ON CONFLICT(filename) DO NOTHING`) and only ever
+  inserted-or-refreshed `pypi_index.serial`. It never revisited a wheel
+  once inserted, so a `yanked` flip on PyPI never reached the database.
+  When a project's serial advances, its previously-seen files must now be
+  **diffed**, not just unioned with.
+* **No raw JSON retained.** The previous `wheels.pypi_simple` column stored
+  each file's simple-index entry as opaque JSON (~6-12 GB across 12M
+  wheels, indexing nothing). This is replaced by normalizing the fields
+  that matter into typed `wheels` columns (`db.md`): `url`,
+  `wheel_sha256`, `metadata_sha256`, `size`, `upload_time`,
+  `requires_python`, `yanked`, `yanked_reason`.
+* **Conditional GET on `/simple/`.** Not previously done; see below.
+* **Concurrency and a dedicated rate reserve.** The previous algorithm
+  fetched project pages one at a time on a single blocking connection
+  with no rate limiting at all. It now runs under the `pypi.org` bucket
+  reserve described in `pipeline.md` (200/min, shared with index polls),
+  at roughly 32 requests in flight.
 
-# Pypi index API
-Reference: https://docs.pypi.org/api/index-api/
+## Update algorithm
 
-```
-GET /simple/ HTTP/1.1
-Host: pypi.org
-Accept: application/vnd.pypi.simple.v1+json
-```
+1. Conditional `GET /simple/` (ETag / `If-Modified-Since`). A `304`
+   short-circuits the entire pass -- nothing has changed since the last
+   run, and no per-project work is needed.
+2. On a `200`, parse the response and compare `meta._last-serial` against
+   the last-seen value; if unchanged, likewise short-circuit.
+3. `SELECT name, serial FROM pypi_index` for an in-memory map of
+   previously-synced projects.
+4. Filter to projects that are missing locally, or whose index serial is
+   newer than the stored one.
+5. For each outdated project, under the `pypi.org` bucket reserve:
+   1. `GET /simple/{name}/`.
+   2. **Diff** the response's file list against the project's existing
+      `wheels` rows (matched by `filename`):
+      * A file present in the response but not locally: insert a new
+        `wheels` row in state `NEED_METADATA` (or `NO_METADATA` --
+        see below), lane assigned per the incremental/backfill rule in
+        `pipeline.md`.
+      * A file present in both, where the entry's `yanked` value differs
+        from the stored value: update `yanked`/`yanked_reason` and mark
+        the wheel's `conda_name` dirty (if it has converted to one
+        already; see `publishing.md`, "What dirties a package").
+      * A file present locally but **absent** from the response: set
+        `deleted_at` (tombstone, never a hard delete) and mark the
+        wheel's `conda_name` dirty, same as a yank flip.
+   3. Only once every file in the response has been reconciled:
+      `INSERT INTO pypi_index (name, serial, updated_at) ... ON CONFLICT
+      DO UPDATE SET serial = excluded.serial, updated_at =
+      excluded.updated_at`, using the serial **from the project page**,
+      not the top-level index.
+6. If any step for a project fails partway, stop processing that project
+   and move on to the next. The `pypi_index` upsert for that project does
+   not happen, so a later pass retries it from scratch. This preserves the
+   previous design's core safety property: `pypi_index.serial` only
+   advances once every file for that project has been fully reconciled.
 
-returns a json object with two keys, `meta` and `projects`
-```json
-{
-  "meta": {
-    "_last-serial": 24888689,
-    "api-version": "1.4"
-  },
-  "projects": [
-    {
-      "_last-serial": 3075854,
-      "name": "0"
-    }
-  ]
-}
-```
+## Metadata sidecar availability
 
-# Pypi project api
-```
-GET /simple/beautifulsoup4/ HTTP/1.1
-Host: pypi.org
-Accept: application/vnd.pypi.simple.v1+json
-```
+`metadata_hashes()` (existing logic in `pypi_client.py`, kept as-is)
+distinguishes "no PEP 658/714 sidecar published" from "sidecar published
+but unhashed" from "sidecar published with a hash." Only the first case
+routes a wheel to the permanent `NO_METADATA` state (`pipeline.md`) --
+this is a `skips` row with `permanent = 1` once encountered downstream,
+not something that ingestion itself writes to `skips` directly, since
+ingestion's job is only to populate `metadata_sha256` (`NULL` or not) on
+the `wheels` row.
 
-retuns a json object with `files`, `meta` and other info
-```json
-{
-"files": [
-    {
-      "core-metadata": false,
-      "data-dist-info-metadata": false,
-      "filename": "beautifulsoup4-4.0.1.tar.gz",
-      "hashes": {
-        "sha256": "dc6bc8e8851a1c590c8cc8f25915180fdcce116e268d1f37fa991d2686ea38de"
-      },
-      "requires-python": null,
-      "size": 51024,
-      "upload-time": "2014-01-21T05:35:05.558877Z",
-      "url": "https://files.pythonhosted.org/packages/6f/be/99dcf74d947cc1e7abef5d0c4572abcb479c33ef791d94453a8fd7987d8f/beautifulsoup4-4.0.1.tar.gz",
-      "yanked": false
-    },
-"meta": {
-    "_last-serial": 22406780,
-    "api-version": "1.4"
-  }
-}
-```
+## Rate limiting
+
+Ingestion draws from the `pypi.org` reserve of the hierarchical token
+bucket described in `pipeline.md` (200/min of the global 2000/min),
+shared between the index poll and per-project page fetches. This reserve
+is intentionally separate from the `files.pythonhosted.org` reserve used
+for `.metadata` sidecar fetches, so that a large backlog of pending
+metadata fetches can never delay index polling or project-page diffing.
+
+Project pages are fetched with up to ~32 requests in flight, consistent
+with the executor sizing table in `pipeline.md`.
