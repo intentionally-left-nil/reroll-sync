@@ -1132,6 +1132,42 @@ def test_recovery_resets_wheels_in_an_unsealed_segment(db_path, reader, writer, 
         assert blob_row is None
 
 
+def test_recovery_clears_stale_wheel_repodata_and_conda_name(db_path, reader, writer, store):
+    """A wheel already at READY (wheel_repodata + conda_name set) whose blob
+    lived in a since-lost, unsealed segment must not keep either after
+    recovery resets it to NEED_METADATA -- fsck's 1b/19 invariants forbid
+    both outside READY.
+    """
+    filename = "ready-1.0-py3-none-any.whl"
+    wheel_id = _insert_wheel(db_path, filename=filename, state=WheelState.READY)
+    data = b"Metadata-Version: 2.1\nName: ready\n"
+    location = store.add(data)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE wheels SET blob_sha256 = ?, conda_name = ? WHERE id = ?",
+        (location.sha256, "ready", wheel_id),
+    )
+    conn.execute(
+        "INSERT INTO wheel_repodata (wheel_id, repodata_zst, reroll_version) VALUES (?, ?, ?)",
+        (wheel_id, b"fake-repodata", REROLL_VERSION),
+    )
+    conn.commit()
+    conn.close()
+    segment_id = store.current_writer().segment_id
+
+    recover_unsealed_segment(store, writer, segment_id)
+
+    row = reader.execute(
+        "SELECT state, blob_sha256, conda_name FROM wheels WHERE id = ?", (wheel_id,)
+    ).fetchone()
+    assert row == (int(WheelState.NEED_METADATA), None, None)
+
+    repodata_row = reader.execute(
+        "SELECT COUNT(*) FROM wheel_repodata WHERE wheel_id = ?", (wheel_id,)
+    ).fetchone()
+    assert repodata_row[0] == 0
+
+
 def test_recovery_does_not_touch_wheels_in_a_sealed_segment(db_path, reader, writer, store):
     filename = "sealed-1.0-py3-none-any.whl"
     wheel_id = _insert_wheel(db_path, filename=filename, state=WheelState.NEED_CONVERT)

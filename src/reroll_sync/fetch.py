@@ -680,13 +680,24 @@ def _recover_chunk_write_op(chunk: list[str], segment_id: int) -> WriteOp:
     placeholders = ", ".join("?" for _ in chunk)
 
     def _apply(conn: sqlite3.Connection) -> int:
-        cursor = conn.execute(
-            f"UPDATE wheels SET state = ?, blob_sha256 = NULL "
-            f"WHERE blob_sha256 IN ({placeholders}) AND state != ?",
-            (int(WheelState.NEED_METADATA), *chunk, int(WheelState.DELETED)),
-        )
-        affected = cursor.rowcount
+        wheel_ids = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT id FROM wheels WHERE blob_sha256 IN ({placeholders}) AND state != ?",
+                (*chunk, int(WheelState.DELETED)),
+            )
+        ]
+        if wheel_ids:
+            id_placeholders = ", ".join("?" for _ in wheel_ids)
+            conn.execute(
+                f"UPDATE wheels SET state = ?, blob_sha256 = NULL, conda_name = NULL "
+                f"WHERE id IN ({id_placeholders})",
+                (int(WheelState.NEED_METADATA), *wheel_ids),
+            )
+            conn.execute(
+                f"DELETE FROM wheel_repodata WHERE wheel_id IN ({id_placeholders})", wheel_ids
+            )
         conn.execute(f"DELETE FROM blobs WHERE sha256 IN ({placeholders})", chunk)
-        return affected
+        return len(wheel_ids)
 
     return WriteOp(name=f"fetch.recover_segment.{segment_id}", apply=_apply)
