@@ -302,4 +302,13 @@ class HierarchicalLimiter:
 
 
 def _one_second_burst(rate_per_minute: float) -> float:
-    return rate_per_minute / 60.0
+    """Return the token-bucket burst for a configured rate.
+
+    One second's worth of the rate, floored at ``1.0``: a bucket's cap
+    also bounds how many tokens refilling can ever accumulate, so a rate
+    below 60/minute would otherwise never hold a whole token and could
+    never satisfy even a single-token request from its own reserve --
+    permanently starving it whenever a sibling never goes idle long enough
+    to borrow from (see ``HierarchicalLimiter._siblings_idle_locked``).
+    """
+    return max(1.0, rate_per_minute / 60.0)

@@ -311,6 +311,34 @@ def test_both_children_saturated_each_gets_at_least_reserve():
     assert snapshot.children["files.pythonhosted.org"].acquired >= 1800 * window_minutes * 0.9
 
 
+def test_low_rate_children_still_get_guaranteed_floor_when_saturated():
+    # Regression test: a reserve below 60/min (< 1 token/sec) must still
+    # reach its configured floor over time, even when saturated alongside
+    # an equally-saturated sibling. A child whose own bucket can never
+    # hold a full token is permanently dependent on the sibling-idle
+    # borrow gate, which a continuously-saturated sibling never opens --
+    # starving it to near zero instead of its guaranteed floor.
+    clock = FakeClock()
+    limiter = _limiter(
+        clock, global_rate=60, children={"pypi.org": 10, "files.pythonhosted.org": 50}
+    )
+    window_seconds = 600.0
+    step = 0.005
+    ticks = int(window_seconds / step)
+    for _ in range(ticks):
+        clock.advance(step)
+        limiter.acquire("pypi.org", timeout=0)
+        limiter.acquire("files.pythonhosted.org", timeout=0)
+    snapshot = limiter.snapshot()
+    window_minutes = window_seconds / 60
+    # A lower tolerance than the higher-rate saturation test above: at a
+    # burst of exactly one token, a single collision with the saturated
+    # sibling over the shared global bucket wastes a whole refill cycle,
+    # a proportionally bigger loss here than at higher rates/bursts.
+    assert snapshot.children["pypi.org"].acquired >= 10 * window_minutes * 0.8
+    assert snapshot.children["files.pythonhosted.org"].acquired >= 50 * window_minutes * 0.8
+
+
 def test_sum_of_grants_never_exceeds_global_rate_over_ten_minute_window():
     clock = FakeClock()
     limiter = _limiter(clock)
