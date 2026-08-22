@@ -5,11 +5,13 @@ network/database work. No test in this module sleeps.
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import pytest
 
 from reroll_sync.daemon.stage_loop import IntervalTrigger, PollTrigger, StageLoop
+from reroll_sync.shutdown import ShutdownError
 
 
 class FakeClock:
@@ -205,6 +207,32 @@ def test_non_fatal_exception_type_not_in_whitelist_is_still_caught():
     assert loop.stats().consecutive_failures == 1
 
 
+def test_run_once_propagates_shutdown_error_without_counting_a_failure():
+    """A `ShutdownError` out of `iterate` is a cross-thread boundary going
+    away mid-shutdown, not a stage failure: it propagates like a fatal
+    exception, but with no failure accounting (the stage is fine; the
+    process is ending)."""
+    loop = _loop(lambda: (_ for _ in ()).throw(ShutdownError("writer went away")))
+    with pytest.raises(ShutdownError):
+        loop.run_once()
+    assert loop.stats().consecutive_failures == 0
+
+
+def test_run_once_raises_shutdown_error_without_calling_iterate_once_shutdown_set():
+    shutdown_event = threading.Event()
+    shutdown_event.set()
+    calls = []
+    loop = StageLoop(
+        "fake_stage",
+        lambda: (calls.append(1), True)[1],
+        PollTrigger(idle_interval=1.0),
+        shutdown_event,
+    )
+    with pytest.raises(ShutdownError):
+        loop.run_once()
+    assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # StageLoop.run_forever
 # ---------------------------------------------------------------------------
@@ -248,6 +276,24 @@ def test_run_forever_never_runs_if_shutdown_already_set():
     )
     loop.run_forever()
     assert calls == []
+
+
+def test_run_forever_exits_cleanly_when_iterate_raises_shutdown_error(caplog):
+    """The shutdown event is never even set here: the exit is driven purely
+    by the boundary exception, proving `run_forever` treats `ShutdownError`
+    as a clean exit (no error log, no failure count) rather than a crash or
+    a retryable failure."""
+    shutdown_event = threading.Event()
+
+    def _iterate():
+        raise ShutdownError("writer went away mid-batch")
+
+    loop = StageLoop("fake_stage", _iterate, PollTrigger(idle_interval=0.0), shutdown_event)
+    with caplog.at_level(logging.INFO):
+        loop.run_forever()
+    assert loop.stats().consecutive_failures == 0
+    assert "unhandled exception" not in caplog.text
+    assert "exiting cleanly" in caplog.text
 
 
 def test_run_forever_runs_repeatedly_while_trigger_stays_due():

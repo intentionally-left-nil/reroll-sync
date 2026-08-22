@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from .shutdown import ShutdownError
+
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 0.02
@@ -29,7 +31,7 @@ class TransactionBoundaryViolation(RuntimeError):
     """Raised when a ``WriteOp.apply`` tries to manage transaction boundaries itself."""
 
 
-class WriterStoppedError(RuntimeError):
+class WriterStoppedError(ShutdownError):
     """Raised by ``submit``/``submit_and_wait`` once the writer has been stopped."""
 
 

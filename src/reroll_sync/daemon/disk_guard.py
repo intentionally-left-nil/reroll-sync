@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -62,30 +63,38 @@ class DiskGuard:
         self._hysteresis = hysteresis
         self._logger = logger if logger is not None else logging.getLogger("reroll_sync.disk_guard")
         self._paused = False
+        self._check_lock = threading.Lock()
 
     def check(self) -> bool:
-        """Refresh paused state from current free space. Returns the new state."""
-        _total, _used, free = self._disk_usage(self._path)
-        if self._paused:
-            if free >= self._floor_bytes * self._hysteresis:
-                self._paused = False
-                self._logger.warning(
-                    "disk guard: %d bytes free on %s, above floor %d bytes x %.2f hysteresis; "
-                    "resuming fetch and archive",
+        """Refresh paused state from current free space. Returns the new state.
+
+        Serialized: two overlapping calls apply in arrival order, so a
+        caller whose ``disk_usage`` read predates another call's pause
+        cannot unpause behind it.
+        """
+        with self._check_lock:
+            _total, _used, free = self._disk_usage(self._path)
+            if self._paused:
+                if free >= self._floor_bytes * self._hysteresis:
+                    self._paused = False
+                    self._logger.warning(
+                        "disk guard: %d bytes free on %s, above floor %d bytes x %.2f hysteresis; "
+                        "resuming fetch and archive",
+                        free,
+                        self._path,
+                        self._floor_bytes,
+                        self._hysteresis,
+                    )
+            elif free < self._floor_bytes:
+                self._paused = True
+                self._logger.error(
+                    "disk guard: %d bytes free on %s, below floor %d bytes; "
+                    "pausing fetch and archive",
                     free,
                     self._path,
                     self._floor_bytes,
-                    self._hysteresis,
                 )
-        elif free < self._floor_bytes:
-            self._paused = True
-            self._logger.error(
-                "disk guard: %d bytes free on %s, below floor %d bytes; pausing fetch and archive",
-                free,
-                self._path,
-                self._floor_bytes,
-            )
-        return self._paused
+            return self._paused
 
     def is_paused(self) -> bool:
         return self._paused

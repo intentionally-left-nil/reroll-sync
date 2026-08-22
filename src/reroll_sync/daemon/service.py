@@ -59,6 +59,7 @@ from ..ingest import ProjectBackoff
 from ..metrics_server import MetricsServer
 from ..pypi_client import PyPIClient
 from ..ratelimit import HierarchicalLimiter
+from ..shutdown import run_task
 from ..version import REROLL_VERSION
 from ..writer import Writer
 from .circuit_breaker import CircuitBreaker
@@ -502,17 +503,23 @@ class Daemon:
 
         `handoff_queue` closing -- fully drained, or (while paused) shutdown
         being signaled with no way to safely drain further -- is this
-        loop's only exit condition; `_archive_thread_step`'s return value
+        loop's main exit condition; `_archive_thread_step`'s return value
         is what tracks it, not a separate check here, so a `shutdown_event`
         set while items are still queued (or still arriving from an
-        in-flight fetch) never cuts a real drain short.
+        in-flight fetch) never cuts a real drain short. The loop also
+        exits cleanly on `ShutdownError` from a boundary: `shutdown` stops
+        the writer once the grace period expires, even if this thread is
+        still mid-drain.
         """
         try:
-            while self._archive_thread_step():
-                pass
+            run_task("archive", self._drain_handoff_queue, logger=logger)
         except Exception:
             logger.critical("archive thread crashed", exc_info=True)
             raise
+
+    def _drain_handoff_queue(self) -> None:
+        while self._archive_thread_step():
+            pass
 
     def _archive_thread_step(self) -> bool:
         """Run one iteration of the archive thread's dispatch loop.

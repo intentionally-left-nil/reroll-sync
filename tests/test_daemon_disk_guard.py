@@ -96,3 +96,44 @@ def test_repeated_pauses_below_floor_do_not_log_more_than_once_per_transition(ca
         second_count = len(caplog.records)
     assert first_count == 1
     assert second_count == 1
+
+
+def test_a_stale_in_flight_check_cannot_undo_a_newer_pause():
+    """Two `check()` calls overlap (the daemon's timer stage vs. a manual
+    call): the first read disk usage *before* the second ran but applies
+    its result *after*. Without serialization, the stale "plenty free"
+    result unpauses the guard right after the newer "empty disk" check
+    paused it -- the CI flake in
+    `test_disk_guard_pause_blocks_fetch_defers_archive_append_then_resumes`,
+    where the stage's startup tick was in flight across the test's
+    `_disk_usage` patch.
+
+    The newer check's own fake-`disk_usage` call is what releases the stale
+    one, so the stale result always lands mid-pause when `check()` is not
+    serialized. When it *is* serialized, the newer check blocks until the
+    stale one finishes (the 0.5s stall bounds that wait), then pauses.
+    """
+    import threading
+
+    started = threading.Event()
+    release_stale = threading.Event()
+    calls = []
+
+    def _disk_usage(_path: Path) -> tuple[int, int, int]:
+        calls.append(1)
+        if len(calls) == 1:
+            started.set()
+            release_stale.wait(timeout=0.5)  # the "slow disk stat" stall
+            return (0, 0, 10_000)  # stale read: plenty free, from before the pause
+        release_stale.set()
+        return (0, 0, 0)  # the newer read: empty disk
+
+    guard = DiskGuard(Path("/tmp/segments"), 1000, disk_usage=_disk_usage)
+    stale = threading.Thread(target=guard.check)
+    stale.start()
+    assert started.wait(timeout=5.0)  # the stale check is now inside `disk_usage`
+
+    assert guard.check() is True  # the newer check pauses
+    stale.join(timeout=5.0)
+
+    assert guard.is_paused() is True
