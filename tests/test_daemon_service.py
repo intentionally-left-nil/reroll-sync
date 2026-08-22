@@ -26,7 +26,7 @@ from reroll_sync.daemon.config import Config
 from reroll_sync.daemon.service import Daemon
 from reroll_sync.db import SchemaMismatchError, init_db
 from reroll_sync.dispatcher import QueueItem
-from reroll_sync.fetch import HandoffItem
+from reroll_sync.fetch import ByteBudgetedQueue, HandoffItem
 from reroll_sync.pypi_client import PyPIClient, PyPITransientError
 from reroll_sync.schema import WheelState
 
@@ -469,6 +469,29 @@ def test_archive_thread_step_paused_with_no_hook_installed_just_waits(
     assert result is True  # paused: told to keep looping, after a bounded wait
 
 
+def test_archive_thread_step_stops_once_shutdown_is_signaled_while_disk_stays_paused(
+    work_dir, socket_dir, daemon_factory
+):
+    """A paused `disk_guard` never lets the archive thread drain (it must
+    never write to disk while paused); once shutdown has also been
+    signaled, waiting for space to free up would just hang the shutdown
+    sequence forever, so the loop gives up instead of looping again.
+    """
+    daemon = daemon_factory(_config(work_dir, socket_dir))
+    daemon.start()
+    daemon.handoff_queue.close()
+    daemon.archive_thread.join(timeout=5.0)
+    assert not daemon.archive_thread.is_alive()
+
+    daemon.disk_guard._disk_usage = lambda _path: (0, 0, 0)
+    assert daemon.disk_guard.check() is True
+    daemon.shutdown_event.set()
+
+    result = daemon._archive_thread_step()
+
+    assert result is False  # gives up rather than waiting for space that may never free up
+
+
 def test_archive_thread_processes_a_queued_item_with_no_test_hook_installed(
     work_dir, socket_dir, daemon_factory
 ):
@@ -591,6 +614,84 @@ def test_shutdown_does_not_seal_the_open_segment(work_dir, socket_dir, daemon_fa
 
     open_files = list((work_dir / "segments").glob("*.open"))
     assert len(open_files) == 1
+
+
+def test_shutdown_does_not_lose_or_error_on_an_in_flight_successful_fetch(
+    work_dir, socket_dir, daemon_factory, capsys
+):
+    """A fetch batch already in flight (a real thread-pool worker blocked
+    mid-HTTP-response) when `shutdown` runs must still be handed off to
+    `handoff_queue` successfully: `shutdown` has to join the fetch stage's
+    thread -- the only producer onto that queue -- before closing it, or
+    the fetch stage's own `put()` call raises `QueueClosed`, silently
+    dropping the already-downloaded bytes and logging what looks like an
+    unhandled exception for a perfectly ordinary shutdown race.
+
+    `capsys`, not `caplog`: `configure_logging` disables propagation to the
+    root logger (see `logging_setup.py`), so pytest's `caplog` never sees
+    daemon log records once a `Daemon` has started.
+
+    Deterministic via `threading.Event`s, not sleeps: `started` confirms
+    the worker thread is genuinely inside the request before shutdown
+    begins; `closed` (a monkeypatched `handoff_queue.close`) is given a
+    short bounded window to fire *before* the response is released --
+    long enough for the pre-fix implementation's unconditional early
+    `close()` to always win that race, but otherwise elapsing harmlessly
+    once `close()` is correctly deferred.
+    """
+    started = threading.Event()
+    closed = threading.Event()
+    release = threading.Event()
+    data = b"Metadata-Version: 2.1\nName: widget\nVersion: 1.0\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "files.pythonhosted.org" not in str(request.url):
+            return httpx.Response(404, request=request)  # e.g. index_poll's own pypi.org probe
+        started.set()
+        assert release.wait(timeout=5.0)
+        return httpx.Response(200, content=data, request=request)
+
+    class _AlwaysGrantLimiter:
+        def acquire(self, child_name: str, n: float = 1, timeout: float | None = None) -> bool:
+            return True
+
+        def penalize(self, child_name: str, seconds: float) -> None:
+            pass
+
+    client = PyPIClient(
+        _AlwaysGrantLimiter(), user_agent=_USER_AGENT, transport=httpx.MockTransport(handler)
+    )
+
+    daemon = daemon_factory(_config(work_dir, socket_dir), pypi_client=client)
+    daemon.start()
+    wheel_id = _insert_wheel(daemon.config.db_path, filename="widget-1.0-py3-none-any.whl")
+
+    real_close = daemon.handoff_queue.close
+
+    def _close() -> None:
+        real_close()
+        closed.set()
+
+    daemon.handoff_queue.close = _close  # type: ignore[method-assign]
+
+    assert started.wait(timeout=5.0)  # the fetch worker is genuinely mid-request
+
+    shutdown_thread = threading.Thread(target=daemon.shutdown)
+    shutdown_thread.start()
+    closed.wait(timeout=0.5)  # give a premature close() every chance to happen first
+    release.set()
+    shutdown_thread.join(timeout=10.0)
+
+    assert not shutdown_thread.is_alive()
+    out = capsys.readouterr().out
+    assert "QueueClosed" not in out
+    assert "unhandled exception in iteration" not in out
+
+    row = _fetchone(
+        daemon.config.db_path, "SELECT state, blob_sha256 FROM wheels WHERE id = ?", (wheel_id,)
+    )
+    assert row[0] == int(WheelState.NEED_CONVERT)  # archived, not silently dropped
+    assert row[1] is not None
 
 
 def test_shutdown_signaled_skips_seal_even_if_threshold_crossed_during_drain(
@@ -790,10 +891,20 @@ def test_archive_thread_crash_is_logged_and_reraised(work_dir, socket_dir, daemo
     holding something), not `.run()`, so that's what's monkeypatched to
     simulate the crash -- with an item queued first, since the loop never
     calls `process_one` at all while the queue is empty.
+
+    The real background archive thread is stopped first and given a fresh
+    queue: otherwise it would race this test's own direct
+    `_run_archive_thread()` call to pop the one queued item, and might
+    call the (already-broken) `process_one` itself, crashing on its own
+    thread instead of (or in addition to) the one this test asserts on.
     """
     daemon = daemon_factory(_config(work_dir, socket_dir))
     daemon.start()
+    daemon.handoff_queue.close()
+    daemon.archive_thread.join(timeout=5.0)
+    assert not daemon.archive_thread.is_alive()
 
+    daemon.handoff_queue = ByteBudgetedQueue(budget_bytes=10_000)
     daemon.handoff_queue.put(
         HandoffItem(
             queue_item=QueueItem(id=1, project="widget", lane=0, state=WheelState.NEED_METADATA),

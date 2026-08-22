@@ -43,7 +43,7 @@ import signal
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -157,7 +157,7 @@ class Daemon:
 
         self.stage_loops: dict[str, StageLoop] = {}
         self.stage_start_errors: dict[str, str] = {}
-        self._stage_threads: list[threading.Thread] = []
+        self._stage_threads: dict[str, threading.Thread] = {}
         self.archive_thread: threading.Thread | None = None
         self.recovered_segment_ids: list[int] = []
         self.control_server: ControlServer | None = None
@@ -338,7 +338,7 @@ class Daemon:
             return
         self.stage_loops[name] = loop
         thread = threading.Thread(target=loop.run_forever, name=f"reroll-sync-{name}", daemon=True)
-        self._stage_threads.append(thread)
+        self._stage_threads[name] = thread
         thread.start()
 
     def _build_project_sync(self) -> StageLoop:
@@ -497,17 +497,18 @@ class Daemon:
         that block lasts. Once (a) and (b) both hold, `process_one` always
         returns `True` (this thread is the queue's only consumer, so
         nothing else can have drained the item counted by the length check
-        just above); `handoff_queue._closed` (private, but read-only and
-        already how `shutdown()` inspects `archive_store` elsewhere in
-        this module), checked only on the empty-queue path, is this loop's
-        one and only exit condition tied to the queue itself, mirroring
-        `process_one`'s own `None`-returning `get` without blocking to
-        find out.
+        just above).
+
+        `handoff_queue` closing -- fully drained, or (while paused) shutdown
+        being signaled with no way to safely drain further -- is this
+        loop's only exit condition; `_archive_thread_step`'s return value
+        is what tracks it, not a separate check here, so a `shutdown_event`
+        set while items are still queued (or still arriving from an
+        in-flight fetch) never cuts a real drain short.
         """
         try:
-            while not self.shutdown_event.is_set():
-                if not self._archive_thread_step():
-                    return
+            while self._archive_thread_step():
+                pass
         except Exception:
             logger.critical("archive thread crashed", exc_info=True)
             raise
@@ -515,16 +516,19 @@ class Daemon:
     def _archive_thread_step(self) -> bool:
         """Run one iteration of the archive thread's dispatch loop.
 
-        Returns whether the loop should keep going: `False` means
-        `handoff_queue` is closed and fully drained, the one exit
-        condition tied to the queue itself (see `_run_archive_thread`).
-        Split out from `_run_archive_thread` so a test can drive exactly
-        one iteration deterministically without racing the real background
+        Returns whether the loop should keep going. `False` means either
+        `handoff_queue` is closed and fully drained, or `disk_guard` is
+        paused and shutdown has been signaled -- draining further would
+        mean writing to disk while paused, which never happens. Split out
+        from `_run_archive_thread` so a test can drive exactly one
+        iteration deterministically without racing the real background
         thread for it.
         """
         if self.disk_guard.is_paused():
             if self._on_archive_disk_pause is not None:
                 self._on_archive_disk_pause()
+            if self.shutdown_event.is_set():
+                return False
             self.shutdown_event.wait(timeout=ARCHIVE_POLL_SECONDS)
             return True
         if len(self.handoff_queue) == 0:
@@ -652,8 +656,19 @@ class Daemon:
         if self.control_server is not None:
             self.control_server.restrict_to_status_only()
         self.shutdown_event.set()
+        deadline = self._now() + SHUTDOWN_GRACE_SECONDS
+        # `fetch` is the only stage that ever calls `handoff_queue.put`, so its
+        # thread must be joined -- meaning it's done submitting, not just told
+        # to stop claiming -- before the queue closes underneath an in-flight
+        # `put`, which would otherwise raise `QueueClosed` and drop an
+        # already-downloaded batch on the floor.
+        self._join_named_stage_threads(("fetch",), deadline=deadline)
         self.handoff_queue.close()  # lets the archive thread's process_one loop exit
-        self._join_stage_threads(timeout=SHUTDOWN_GRACE_SECONDS)
+        self._join_named_stage_threads(
+            (name for name in self._stage_threads if name != "fetch"), deadline=deadline
+        )
+        if self.archive_thread is not None:
+            self.archive_thread.join(timeout=max(0.0, deadline - self._now()))
 
         # Deliberately not sealing the archive's open segment: sealing
         # under time pressure risks a partial footer, and spec 09's own
@@ -677,14 +692,12 @@ class Daemon:
         self.archive_conn.close()
         self._stopped_event.set()
 
-    def _join_stage_threads(self, *, timeout: float) -> None:
-        deadline = self._now() + timeout
-        threads = list(self._stage_threads)
-        if self.archive_thread is not None:
-            threads.append(self.archive_thread)
-        for thread in threads:
-            remaining = max(0.0, deadline - self._now())
-            thread.join(timeout=remaining)
+    def _join_named_stage_threads(self, names: Iterable[str], *, deadline: float) -> None:
+        for name in names:
+            thread = self._stage_threads.get(name)
+            if thread is None:
+                continue
+            thread.join(timeout=max(0.0, deadline - self._now()))
 
 
 class _AddsBlobs(Protocol):
